@@ -119,25 +119,58 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
     return pd.DataFrame(history), logs
 
 # -----------------------------------------------------------
-# 3. 사이드바 및 자동 동기화
+# 3. 사이드바 및 자동 동기화 (실전 로그 자동 생성 로직 추가)
 # -----------------------------------------------------------
 st.sidebar.header("⚙️ 기본 설정")
 with st.sidebar.form("main_settings"):
-    st.info("💡 동기화 버튼을 누르면 실전/백테스트가 즉시 갱신됩니다.")
+    st.info("💡 동기화 시 시작일부터 현재까지의 매매 기록이 자동 생성됩니다.")
     set_date = st.date_input("투자 시작일", value=pd.to_datetime(settings['start_date']))
     set_cap = st.number_input("시작 원금 ($)", value=settings['initial_capital'], step=1000)
     set_max_cash = st.slider("최대 현금 투입 한도 (%)", 10, 100, settings['max_cash_pct'])
     set_init_pct = st.slider("초기 진입 비중 (%)", 0, 100, settings['initial_entry_pct'], step=5)
     
-    sync_btn = st.form_submit_button("🔄 설정 저장 및 자동 동기화")
+    sync_btn = st.form_submit_button("🔄 설정 저장 및 실전 동기화")
 
 if sync_btn:
-    settings.update({'start_date': set_date.strftime('%Y-%m-%d'), 'initial_capital': set_cap, 'max_cash_pct': set_max_cash, 'initial_entry_pct': set_init_pct})
+    # 1. 설정값 저장
+    settings.update({
+        'start_date': set_date.strftime('%Y-%m-%d'), 
+        'initial_capital': set_cap, 
+        'max_cash_pct': set_max_cash, 
+        'initial_entry_pct': set_init_pct
+    })
     save_json(SETTINGS_FILE, settings)
-    st.rerun()
 
-# 데이터 로드
-df_weekly = fetch_data()
+    # 2. [핵심] 시작일부터 현재까지의 매매 내역을 엔진으로 계산하여 실전 로그(CSV) 생성
+    df_weekly = fetch_data()
+    # 시작일부터 오늘까지의 가상 매매 실행
+    res_history, res_logs = run_wedaeri_engine(df_weekly, set_date, datetime.now(), settings)
+    
+    if not res_logs:
+        # 데이터가 없는 경우(미래 날짜 등) 초기화 로그 생성
+        init_log = pd.DataFrame([{
+            'Date': set_date.strftime('%Y-%m-%d'), 'Type': 'First Buy', 'Tier': 'MID',
+            'Price': 0, 'Value': 0, 'Qty': 0, 'Balance_Qty': 0, 'Total_Cash': set_cap
+        }])
+        init_log.to_csv(LOG_FILE, index=False)
+    else:
+        # 엔진 로그를 실전 로그 형식으로 변환하여 저장
+        # 엔진 로그에는 현금이 없으므로 역산하여 기록 생성
+        converted_logs = []
+        temp_cash = set_cap
+        for l in res_logs:
+            if l['매매'] in ['First Buy', 'Buy']: temp_cash -= l['거래금액']
+            else: temp_cash += l['거래금액']
+            
+            converted_logs.append({
+                'Date': l['날짜'], 'Type': l['매매'], 'Tier': l['상태'],
+                'Price': l['가격'], 'Value': l['거래금액'], 'Qty': 0, # Qty는 정보용
+                'Balance_Qty': l['보유수량'], 'Total_Cash': temp_cash
+            })
+        pd.DataFrame(converted_logs).sort_values('Date', ascending=False).to_csv(LOG_FILE, index=False)
+    
+    st.sidebar.success("✅ 실전 로그가 동기화되었습니다!")
+    st.rerun()
 
 # -----------------------------------------------------------
 # 4. 메인 대시보드 레이아웃
