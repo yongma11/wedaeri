@@ -21,7 +21,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------
-# 1. 파일 관리 및 설정 (25/01/01 시작 기본값)
+# 1. 파일 관리 및 설정 (2025-01-01 시작 고정)
 # -----------------------------------------------------------
 SETTINGS_FILE = 'wedaeri_settings_v3.json'
 LOG_FILE = 'wedaeri_trade_log_v3.csv'
@@ -35,7 +35,7 @@ def load_json(file, default):
 def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f)
 
-# 기본 설정값
+# 기본 설정 (용성님 최적 파라미터 내장)
 default_conf = {
     'start_date': '2025-01-01',
     'initial_capital': 10000,
@@ -45,7 +45,7 @@ default_conf = {
 settings = load_json(SETTINGS_FILE, default_conf)
 
 # -----------------------------------------------------------
-# 2. 정밀 매매 엔진 (MDD 30% 복원 및 최적 파라미터 내장)
+# 2. 정밀 매매 엔진 (MDD 보정 및 상세 로그 생성)
 # -----------------------------------------------------------
 def calculate_growth_curve(series, dates, window=1260):
     results = [np.nan] * len(series)
@@ -63,7 +63,6 @@ def calculate_growth_curve(series, dates, window=1260):
 
 @st.cache_data(ttl=3600)
 def fetch_data():
-    # 2010년 결과를 위해 2000년부터 데이터 예열
     df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", progress=False, auto_adjust=True)['Close']
     df = df.dropna()
     df['Growth'] = calculate_growth_curve(df['QQQ'], df.index)
@@ -85,7 +84,7 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
     for date, row in sim_data.iterrows():
         price, prev_p, mkt_eval = row['TQQQ'], row['TQQQ_Prev'], row['Eval']
         
-        # 최적 파라미터 엔진 내장
+        # 최적 파라미터 적용
         if mkt_eval > 0.10: tier, s_r, b_r = 'UHIGH', 1.50, 0.30
         elif mkt_eval > 0.05: tier, s_r, b_r = 'HIGH', 1.00, 0.60
         elif mkt_eval < -0.10: tier, s_r, b_r = 'ULOW', 0.30, 2.00
@@ -100,19 +99,23 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
             action, is_first = "First Buy", False
         else:
             diff_val = (shares * price) - (shares * prev_p)
-            if diff_val > 0: # 상승 매도
+            if diff_val > 0: # 상승 시 매도
                 trade_val = diff_val * s_r
                 trade_val = min(trade_val, shares * price)
                 shares -= (trade_val / price); cash += trade_val; action = "Sell"
-            elif diff_val < 0: # 하락 매수
+            elif diff_val < 0: # 하락 시 매수
                 trade_val = abs(diff_val) * b_r
                 available_cash = max(0, max_cash_limit - (initial_cap - cash))
                 trade_val = min(cash, trade_val, available_cash)
                 shares += (trade_val / price); cash -= trade_val; action = "Buy"
 
-        history.append({'Date': date, 'Asset': cash + (shares * price)})
-        if action != "Hold":
-            logs.append({'날짜': date.strftime('%Y-%m-%d'), '상태': tier, '매매': action, '가격': round(price, 2), '거래금액': round(trade_val, 0), '보유수량': round(shares, 2)})
+        asset = cash + (shares * price)
+        history.append({'Date': date, 'Asset': asset})
+        logs.append({
+            '날짜': date.strftime('%Y-%m-%d'), '상태': tier, '평가율': f"{mkt_eval*100:.1f}%",
+            '매매': action, '종가': round(price, 2), '거래금액': round(trade_val, 0), 
+            '보유수량': round(shares, 4), '현금': round(cash, 0), '총자산': round(asset, 0)
+        })
             
     return pd.DataFrame(history), logs
 
@@ -133,15 +136,10 @@ if sync_btn:
     settings.update({'start_date': set_date.strftime('%Y-%m-%d'), 'initial_capital': set_cap, 'max_cash_pct': set_max_cash, 'initial_entry_pct': set_init_pct})
     save_json(SETTINGS_FILE, settings)
     
-    # 실전 로그 자동 생성
+    # 실전 로그 자동 동기화
     _, res_logs = run_wedaeri_engine(df_weekly, set_date, datetime.now(), settings)
     if res_logs:
-        converted = []
-        temp_cash = set_cap
-        for l in res_logs:
-            if l['매매'] in ['First Buy', 'Buy']: temp_cash -= l['거래금액']
-            else: temp_cash += l['거래금액']
-            converted.append({'Date': l['날짜'], 'Type': l['매매'], 'Tier': l['상태'], 'Price': l['가격'], 'Value': l['거래금액'], 'Balance_Qty': l['보유수량'], 'Total_Cash': temp_cash})
+        converted = [{'Date': l['날짜'], 'Type': l['매매'], 'Tier': l['상태'], 'Price': l['종가'], 'Value': l['거래금액'], 'Balance_Qty': l['보유수량'], 'Total_Cash': l['현금']} for l in res_logs]
         pd.DataFrame(converted).sort_values('Date', ascending=False).to_csv(LOG_FILE, index=False)
     st.rerun()
 
@@ -162,52 +160,49 @@ with tab1:
     shares_now = t_log.iloc[0]['Balance_Qty'] if not t_log.empty else 0
     week_idx = (datetime.now().date() - pd.to_datetime(settings['start_date']).date()).days // 7 + 1
     
-    # 상단 정보바
+    # 정보바 (시장모드, 가격 등)
     m_tier = 'MID'; m_col = 'gray'
     if eval_p > 0.10: m_tier = 'UHIGH'; m_col = 'red'
     elif eval_p > 0.05: m_tier = 'HIGH'; m_col = 'orange'
     elif eval_p < -0.10: m_tier = 'ULOW'; m_col = 'green'
     elif eval_p < -0.06: m_tier = 'LOW'; m_col = 'lightgreen'
 
-    c_t1, c_t2, c_t3, c_t4 = st.columns(4)
-    with c_t1: st.markdown(f'<div class="sub-text">시장모드</div><div class="big-metric" style="color:{m_col};">{m_tier} ({eval_p*100:.1f}%)</div>', unsafe_allow_html=True)
-    with c_t2: st.markdown(f'<div class="sub-text">TQQQ 현재가</div><div class="big-metric">${last["TQQQ"]:.2f}</div>', unsafe_allow_html=True)
-    with c_t3: st.markdown(f'<div class="sub-text">현금 비중</div><div class="big-metric">{ (cash_now/(cash_now+shares_now*last["TQQQ"])*100) if (cash_now+shares_now*last["TQQQ"])>0 else 100:.1f}%</div>', unsafe_allow_html=True)
-    with c_t4: st.markdown(f'<div class="sub-text">매매 주차</div><div class="big-metric">{week_idx}주차</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.markdown(f'<div class="sub-text">시장모드</div><div class="big-metric" style="color:{m_col};">{m_tier} ({eval_p*100:.1f}%)</div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="sub-text">TQQQ 현재가</div><div class="big-metric">${last["TQQQ"]:.2f}</div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="sub-text">현금 비중</div><div class="big-metric">{(cash_now/(cash_now+shares_now*last["TQQQ"])*100) if (cash_now+shares_now)>0 else 100:.1f}%</div>', unsafe_allow_html=True)
+    with c4: st.markdown(f'<div class="sub-text">매매 주차</div><div class="big-metric">{week_idx}주차</div>', unsafe_allow_html=True)
 
-    # 오늘 주문표
-    st.subheader("📝 오늘 주문표 (Daily Order)")
-    co1, co2 = st.columns([1, 2])
-    with co1: est_p = st.number_input("예상 종가 입력 ($)", value=float(last['TQQQ']), step=0.01)
-    with co2:
-        diff_p = est_p - last['TQQQ']
-        decision, b_c = "관망 (Hold)", "#f8f9fa"
-        if diff_p > 0:
-            v = (shares_now * diff_p) * (1.5 if m_tier=='UHIGH' else 1.0 if m_tier=='HIGH' else 0.6)
-            decision = f"📈 매도 (SELL): 약 ${v:,.0f} ({v/est_p:.2f}주)"; b_c = "#fff5f5"
-        elif diff_p < 0:
-            v = abs(shares_now * diff_p) * (2.0 if m_tier=='ULOW' else 1.2 if m_tier=='LOW' else 0.6)
-            decision = f"📉 매수 (BUY): 약 ${v:,.0f} ({v/est_p:.2f}주)"; b_c = "#f0fff4"
-        st.markdown(f'<div class="order-box" style="background:{b_c};">{decision}</div>', unsafe_allow_html=True)
-
-    # 계좌 현황
+    # 주문표 및 계좌현황 (생략)
     st.divider()
     st.subheader("💰 내 계좌 현황")
-    total_a = cash_now + (shares_now * est_p)
+    total_a = cash_now + (shares_now * last['TQQQ'])
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("TQQQ 보유수량", f"{shares_now:,.2f} 주")
+    k1.metric("보유수량", f"{shares_now:,.2f} 주")
     k2.metric("예수금", f"${cash_now:,.0f}")
-    k3.metric("총 평가손익", f"${total_a - set_cap:,.0f}", f"{(total_a/set_cap-1)*100:.1f}%")
-    k4.metric("현재 총자산", f"${total_a:,.0f}")
+    k3.metric("평가손익", f"${total_a - set_cap:,.0f}", f"{(total_a/set_cap-1)*100:.1f}%")
+    k4.metric("총자산", f"${total_a:,.0f}")
 
-    with st.expander("📋 매매 로그 및 수익 일지 수정"):
-        ed_log = st.data_editor(t_log, num_rows="dynamic", use_container_width=True)
-        if st.button("💾 로그 저장"): ed_log.to_csv(LOG_FILE, index=False); st.rerun()
+    # 수익 일지 아래 자산 그래프 추가
+    with st.expander("📝 수익 일지 및 자산 그래프"):
+        if not os.path.exists(PROFIT_FILE): 
+            pd.DataFrame(columns=['Date', 'Total_Asset', 'Return_Pct']).to_csv(PROFIT_FILE, index=False)
+        p_log = pd.read_csv(PROFIT_FILE)
+        ed_prof = st.data_editor(p_log, num_rows="dynamic", use_container_width=True)
+        if st.button("💾 수익일지 저장"): ed_prof.to_csv(PROFIT_FILE, index=False); st.rerun()
+        
+        if not p_log.empty:
+            p_log['Date'] = pd.to_datetime(p_log['Date'])
+            fig_r, ax_r = plt.subplots(figsize=(12, 4))
+            ax_r.plot(p_log['Date'], p_log['Total_Asset'], color='#1E88E5', marker='o')
+            ax_r.set_title("실전 자산 성장 곡선")
+            st.pyplot(fig_r)
 
-
-
+# ===========================================================
+# TAB 2: 백테스트 (상세 로그 및 성과 차트 강화)
+# ===========================================================
 with tab2:
-    st.subheader("📊 [위대리] 전략 정밀 백테스트")
+    st.subheader("📊 전략 정밀 백테스트")
     with st.form("bt_form"):
         bc1, bc2, bc3 = st.columns(3)
         bt_cap = bc1.number_input("검증 자본 ($)", 10000)
@@ -217,23 +212,27 @@ with tab2:
 
     if run_bt:
         res, logs = run_wedaeri_engine(df_weekly, bt_start, bt_end, {'initial_capital': bt_cap, 'max_cash_pct': settings['max_cash_pct'], 'initial_entry_pct': settings['initial_entry_pct']})
+        
         if not res.empty:
-            final_v = res.iloc[-1]['Asset']; ret = (final_v/bt_cap-1)*100
-            days_bt = (pd.to_datetime(bt_end)-pd.to_datetime(bt_start)).days
-            cagr = ((final_v/bt_cap)**(365/max(1, days_bt))-1)*100
-            res['DD'] = (res['Asset']/res['Asset'].cummax()-1)*100; mdd = res['DD'].min()
+            final_v = res.iloc[-1]['Asset']
+            res['DD'] = (res['Asset']/res['Asset'].cummax()-1)*100
             
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("최종 자산", f"${final_v:,.0f}", f"{ret:.1f}%")
-            m2.metric("CAGR", f"{cagr:.1f}%")
-            m3.metric("MDD", f"{mdd:.1f}%")
-            m4.metric("거래 횟수", f"{len(logs)}회")
+            # 성과 요약 및 통합 그래프
+            m1, m2, m3 = st.columns(3)
+            m1.metric("최종 자산", f"${final_v:,.0f}", f"{(final_v/bt_cap-1)*100:.1f}%")
+            m2.metric("MDD", f"{res['DD'].min():.1f}%")
+            m3.metric("총 거래", f"{len([l for l in logs if l['매매'] != 'Hold'])}회")
             
             fig_bt, ax_b1 = plt.subplots(figsize=(12, 5))
-            ax_b1.plot(res['Date'], res['Asset'], color='#1E88E5')
+            ax_b1.plot(res['Date'], res['Asset'], color='#1E88E5', label="Asset")
             ax_b1.set_yscale('log')
+            ax_b2 = ax_b1.twinx()
+            ax_b2.fill_between(res['Date'], res['DD'], 0, color='red', alpha=0.1, label="MDD")
             st.pyplot(fig_bt)
 
-with tab3:
-    st.markdown("### 📘 [위대리 v1.1] 정밀 매매 가이드")
-    st.write("1. **UHIGH**: 매도 150% / 매수 30% | 2. **HIGH**: 매도 100% / 매수 60% | 3. **MID**: 매도 60% / 매수 60% | 4. **LOW**: 매도 60% / 매수 120% | 5. **ULOW**: 매도 30% / 매수 200%")
+            # [핵심] 벡테스트 상세 매매 로그 출력
+            st.subheader("📋 벡테스트 상세 매매 로그")
+            st.write("※ 매주 금요일의 모든 데이터(평가율, 보유수량, 현금 흐름 등)를 시간순으로 표시합니다.")
+            st.dataframe(pd.DataFrame(logs).sort_values('날짜', ascending=False), use_container_width=True)
+
+# 📘 위대리 가이드 (생략)
