@@ -21,7 +21,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------
-# 1. 파일 관리 및 설정 (용성님 최적 파라미터 고정)
+# 1. 파일 관리 및 설정 (25/01/01 시작 기본값)
 # -----------------------------------------------------------
 SETTINGS_FILE = 'wedaeri_settings_v3.json'
 LOG_FILE = 'wedaeri_trade_log_v3.csv'
@@ -35,7 +35,7 @@ def load_json(file, default):
 def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f)
 
-# 기본 설정 (25/01/01 시작)
+# 기본 설정값
 default_conf = {
     'start_date': '2025-01-01',
     'initial_capital': 10000,
@@ -45,7 +45,7 @@ default_conf = {
 settings = load_json(SETTINGS_FILE, default_conf)
 
 # -----------------------------------------------------------
-# 2. 정밀 매매 엔진 (MDD 30% 복원 로직)
+# 2. 정밀 매매 엔진 (MDD 30% 복원 및 최적 파라미터 내장)
 # -----------------------------------------------------------
 def calculate_growth_curve(series, dates, window=1260):
     results = [np.nan] * len(series)
@@ -63,6 +63,7 @@ def calculate_growth_curve(series, dates, window=1260):
 
 @st.cache_data(ttl=3600)
 def fetch_data():
+    # 2010년 결과를 위해 2000년부터 데이터 예열
     df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", progress=False, auto_adjust=True)['Close']
     df = df.dropna()
     df['Growth'] = calculate_growth_curve(df['QQQ'], df.index)
@@ -84,7 +85,7 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
     for date, row in sim_data.iterrows():
         price, prev_p, mkt_eval = row['TQQQ'], row['TQQQ_Prev'], row['Eval']
         
-        # 용성님 최적 파라미터 (엔진 내장)
+        # 최적 파라미터 엔진 내장
         if mkt_eval > 0.10: tier, s_r, b_r = 'UHIGH', 1.50, 0.30
         elif mkt_eval > 0.05: tier, s_r, b_r = 'HIGH', 1.00, 0.60
         elif mkt_eval < -0.10: tier, s_r, b_r = 'ULOW', 0.30, 2.00
@@ -118,7 +119,6 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
 # -----------------------------------------------------------
 # 3. 사이드바 및 자동 동기화
 # -----------------------------------------------------------
-# 앱 시작 시 데이터를 먼저 불러와서 NameError 방지
 df_weekly = fetch_data()
 
 st.sidebar.header("⚙️ 기본 설정")
@@ -172,7 +172,7 @@ with tab1:
     c_t1, c_t2, c_t3, c_t4 = st.columns(4)
     with c_t1: st.markdown(f'<div class="sub-text">시장모드</div><div class="big-metric" style="color:{m_col};">{m_tier} ({eval_p*100:.1f}%)</div>', unsafe_allow_html=True)
     with c_t2: st.markdown(f'<div class="sub-text">TQQQ 현재가</div><div class="big-metric">${last["TQQQ"]:.2f}</div>', unsafe_allow_html=True)
-    with c_top3: st.markdown(f'<div class="sub-text">현금 비중</div><div class="big-metric">{ (cash_now/(cash_now+shares_now*last["TQQQ"])*100) if (cash_now+shares_now)>0 else 100:.1f}%</div>', unsafe_allow_html=True)
+    with c_t3: st.markdown(f'<div class="sub-text">현금 비중</div><div class="big-metric">{ (cash_now/(cash_now+shares_now*last["TQQQ"])*100) if (cash_now+shares_now*last["TQQQ"])>0 else 100:.1f}%</div>', unsafe_allow_html=True)
     with c_t4: st.markdown(f'<div class="sub-text">매매 주차</div><div class="big-metric">{week_idx}주차</div>', unsafe_allow_html=True)
 
     # 오늘 주문표
@@ -204,24 +204,30 @@ with tab1:
         ed_log = st.data_editor(t_log, num_rows="dynamic", use_container_width=True)
         if st.button("💾 로그 저장"): ed_log.to_csv(LOG_FILE, index=False); st.rerun()
 
-# 
+
 
 with tab2:
     st.subheader("📊 [위대리] 전략 정밀 백테스트")
     with st.form("bt_form"):
-        c1, c2, c3 = st.columns(3)
-        bt_cap = c1.number_input("검증 자본 ($)", 10000)
-        bt_start = c2.date_input("검증 시작일", pd.to_datetime("2010-01-01"))
-        bt_end = c3.date_input("검증 종료일", datetime.now())
+        bc1, bc2, bc3 = st.columns(3)
+        bt_cap = bc1.number_input("검증 자본 ($)", 10000)
+        bt_start = bc2.date_input("검증 시작일", pd.to_datetime("2010-01-01"))
+        bt_end = bc3.date_input("검증 종료일", datetime.now())
         run_bt = st.form_submit_button("🚀 분석 실행")
 
     if run_bt:
-        res, logs = run_wedaeri_engine(df_weekly, bt_start, bt_end, {'initial_capital': bt_cap, 'max_cash_pct': set_max_cash, 'initial_entry_pct': set_init_pct})
+        res, logs = run_wedaeri_engine(df_weekly, bt_start, bt_end, {'initial_capital': bt_cap, 'max_cash_pct': settings['max_cash_pct'], 'initial_entry_pct': settings['initial_entry_pct']})
         if not res.empty:
-            # 성과 지표 출력 및 그래프 (이전 로직 유지)
-            st.success("백테스트 완료!")
-            final_v = res.iloc[-1]['Asset']
-            st.metric("최종 자산", f"${final_v:,.0f}", f"{(final_v/bt_cap-1)*100:.1f}%")
+            final_v = res.iloc[-1]['Asset']; ret = (final_v/bt_cap-1)*100
+            days_bt = (pd.to_datetime(bt_end)-pd.to_datetime(bt_start)).days
+            cagr = ((final_v/bt_cap)**(365/max(1, days_bt))-1)*100
+            res['DD'] = (res['Asset']/res['Asset'].cummax()-1)*100; mdd = res['DD'].min()
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("최종 자산", f"${final_v:,.0f}", f"{ret:.1f}%")
+            m2.metric("CAGR", f"{cagr:.1f}%")
+            m3.metric("MDD", f"{mdd:.1f}%")
+            m4.metric("거래 횟수", f"{len(logs)}회")
             
             fig_bt, ax_b1 = plt.subplots(figsize=(12, 5))
             ax_b1.plot(res['Date'], res['Asset'], color='#1E88E5')
