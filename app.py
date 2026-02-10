@@ -6,11 +6,8 @@ import yfinance as yf
 from datetime import datetime
 
 # -----------------------------------------------------------
-# 0. 기본 설정 및 데이터 로직 (기존과 동일)
+# 1. 데이터 처리 로직
 # -----------------------------------------------------------
-st.set_page_config(page_title="Wedaeri v1.1 Optimizer", layout="wide", page_icon="📈")
-st.title("📈 위대리 v1.1 (5-Tier) 최적화 시뮬레이터")
-
 def calculate_growth_curve_precise(series, dates, window=1260):
     results = [np.nan] * len(series)
     date_nums = dates.map(pd.Timestamp.toordinal).values
@@ -41,7 +38,7 @@ def get_backtest_data():
     return weekly_df.dropna()
 
 # -----------------------------------------------------------
-# 2. 시뮬레이션 엔진 (초기 진입 비중 로직 적용)
+# 2. 시뮬레이션 엔진
 # -----------------------------------------------------------
 def run_simulation(df, start_dt, end_dt, params):
     sim_data = df[(df.index >= pd.to_datetime(start_dt)) & (df.index <= pd.to_datetime(end_dt))].copy()
@@ -50,51 +47,38 @@ def run_simulation(df, start_dt, end_dt, params):
     shares = 0
     history = []
     max_cash_usage = initial_cap * (params['max_cash_pct'] / 100)
-    
-    is_first_trade = True # 초기 진입 여부 체크
+    is_first_trade = True 
     
     for date, row in sim_data.iterrows():
         price = row['TQQQ']
         prev_price = row['TQQQ_Prev']
         mkt_eval = row['Eval']
         
-        # 티어 분류
         if mkt_eval > params['uhigh_cut']: tier = 'UHIGH'
         elif mkt_eval > params['high_cut']: tier = 'HIGH'
         elif mkt_eval < params['ulow_cut']: tier = 'ULOW'
         elif mkt_eval < params['low_cut']: tier = 'LOW'
         else: tier = 'MID'
         
-        action = "Hold"
-        
-        # 1. 초기 진입 로직
         if is_first_trade:
-            # 설정된 '초기 진입 비중'만큼만 매수
             first_buy_amt = initial_cap * (params['initial_entry_pct'] / 100)
-            # 단, 최대 현금 사용 한도를 넘을 수는 없음
             first_buy_amt = min(first_buy_amt, max_cash_usage)
-            
             shares = int(first_buy_amt / price)
             cash -= (shares * price)
-            action = f"First Buy ({params['initial_entry_pct']}%)"
             is_first_trade = False
-        
-        # 2. 이후 매매 로직
         else:
             current_value = shares * price
             prev_value = shares * prev_price
             diff = current_value - prev_value
             
-            if diff > 0: # 수익 구간 매도
+            if diff > 0:
                 rate = params['sell_ratios'][tier]
                 qty_to_sell = int((diff * (rate / 100)) / price)
                 if qty_to_sell > 0:
                     shares -= qty_to_sell
                     cash += (qty_to_sell * price)
-                    action = "Sell"
-            elif diff < 0: # 손실 구간 매수
+            elif diff < 0:
                 rate = params['buy_ratios'][tier]
-                # 현금 사용 한도 내에서만 추가 매수 가능
                 available_limit = max_cash_usage - (initial_cap - cash)
                 if available_limit > 0:
                     trade_val = abs(diff) * (rate / 100)
@@ -103,20 +87,18 @@ def run_simulation(df, start_dt, end_dt, params):
                     if qty_to_buy > 0:
                         shares += qty_to_buy
                         cash -= (qty_to_buy * price)
-                        action = "Buy"
         
-        history.append({'Date': date, 'Tier': tier, 'Asset': cash + (shares * price), 'Cash': cash})
-    
+        history.append({'Date': date, 'Tier': tier, 'Asset': cash + (shares * price)})
     return pd.DataFrame(history)
 
 # -----------------------------------------------------------
-# 3. 사이드바 설정 (초기 진입 비중 UI 추가)
+# 3. 사이드바 설정
 # -----------------------------------------------------------
 st.sidebar.header("⚙️ 전략 파라미터")
 
 if 'params' not in st.session_state:
     st.session_state.params = {
-        'initial_capital': 10000, 'max_cash_pct': 100, 'initial_entry_pct': 50, # 기본값 50%
+        'initial_capital': 10000, 'max_cash_pct': 100, 'initial_entry_pct': 50,
         'uhigh_cut': 10.0, 'high_cut': 7.0, 'low_cut': -5.0, 'ulow_cut': -10.0,
         's_UHIGH': 100, 'b_UHIGH': 30, 's_HIGH': 70, 'b_HIGH': 50,
         's_MID': 50, 'b_MID': 50, 's_LOW': 30, 'b_LOW': 70, 's_ULOW': 20, 'b_ULOW': 100
@@ -129,7 +111,6 @@ p_cap = st.sidebar.number_input("초기 자본 ($)", value=st.session_state.para
 st.sidebar.divider()
 st.sidebar.subheader("🔒 리스크 관리")
 p_max_cash = st.sidebar.slider("최대 현금 투입 한도 (%)", 10, 100, st.session_state.params['max_cash_pct'])
-# 초기 진입 비중 설정 추가 (5% 단위)
 p_init_entry = st.sidebar.slider("초기 진입 비중 (%)", 0, 100, st.session_state.params['initial_entry_pct'], step=5)
 
 st.sidebar.divider()
@@ -169,7 +150,7 @@ params = {
 }
 
 # -----------------------------------------------------------
-# 4. 실행 및 리포트 (기존과 동일)
+# 4. 실행 및 리포트 출력
 # -----------------------------------------------------------
 if st.sidebar.button("🚀 시뮬레이션 실행", type="primary", on_click=save_params):
     with st.spinner("백테스팅 진행 중..."):
@@ -177,6 +158,53 @@ if st.sidebar.button("🚀 시뮬레이션 실행", type="primary", on_click=sav
         res = run_simulation(df_weekly, p_start, p_end, params)
         
     if not res.empty:
-        # 결과 리포트 및 그래프 코드 생략 (기존과 동일)
-        st.success("시뮬레이션 완료!")
-        # ... 성과 요약 및 그래프 출력 부분 ...
+        # 지표 계산
+        final_asset = res.iloc[-1]['Asset']
+        total_return = (final_asset / p_cap - 1) * 100
+        days = (res.iloc[-1]['Date'] - res.iloc[0]['Date']).days
+        cagr = ((final_asset / p_cap) ** (365 / days) - 1) * 100 if days > 0 else 0
+        res['Peak'] = res['Asset'].cummax()
+        res['DD'] = (res['Asset'] / res['Peak'] - 1) * 100
+        mdd = res['DD'].min()
+        
+        weekly_returns = res['Asset'].pct_change().dropna()
+        sharpe = (weekly_returns.mean() / weekly_returns.std()) * np.sqrt(52) if weekly_returns.std() != 0 else 0
+
+        # --- [결과 화면 출력 시작] ---
+        st.subheader("🚩 성과 요약 리포트")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("총수익률", f"{total_return:,.1f}%")
+        m2.metric("CAGR (연평균)", f"{cagr:.2f}%")
+        m3.metric("MDD (최대낙폭)", f"{mdd:.1f}%")
+        m4.metric("샤프 지수", f"{sharpe:.2f}")
+
+        # 통합 차트 그리기
+        st.subheader("📈 자산 성장 및 하락폭(MDD) 통합 차트")
+        fig, ax1 = plt.subplots(figsize=(12, 6))
+        
+        # 왼쪽 축: 자산 (로그 스케일)
+        ax1.plot(res['Date'], res['Asset'], color='#1E88E5', label='Total Asset', linewidth=2)
+        ax1.set_yscale('log')
+        ax1.set_ylabel("Asset Value ($)", color='#1E88E5', fontsize=12)
+        ax1.grid(True, which='both', linestyle='--', alpha=0.4)
+        
+        # 오른쪽 축: MDD
+        ax2 = ax1.twinx()
+        ax2.fill_between(res['Date'], res['DD'], 0, color='#E57373', alpha=0.3, label='Drawdown (%)')
+        ax2.set_ylabel("Drawdown (%)", color='#C62828', fontsize=12)
+        ax2.set_ylim(-100, 5)
+        
+        plt.title(f"Performance: {p_start} to {p_end}", fontsize=14)
+        st.pyplot(fig)
+
+        # 연도별 데이터 표
+        st.subheader("📅 연도별 성과 요약")
+        res['Year'] = res['Date'].dt.year
+        yearly_perf = []
+        for year, group in res.groupby('Year'):
+            y_ret = (group.iloc[-1]['Asset'] / group.iloc[0]['Asset'] - 1) * 100
+            yearly_perf.append({'연도': year, '수익률': f"{y_ret:.1f}%", 'MDD': f"{group['DD'].min():.1f}%"})
+        st.table(pd.DataFrame(yearly_perf).set_index('연도').T)
+        
+    else:
+        st.error("해당 기간의 데이터를 불러올 수 없습니다.")
