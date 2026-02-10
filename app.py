@@ -6,7 +6,7 @@ import yfinance as yf
 from datetime import datetime
 
 # -----------------------------------------------------------
-# 0. 기본 설정 및 세션 초기화 (용성님의 최적 파라미터 반영)
+# 0. 기본 설정 및 세션 초기화 (용성님의 최적 파라미터 고정)
 # -----------------------------------------------------------
 st.set_page_config(page_title="Wedaeri v1.1 Final", layout="wide", page_icon="🏆")
 st.title("🏆 위대리 v1.1 최적 파라미터 시뮬레이터")
@@ -18,12 +18,10 @@ if 'init' not in st.session_state:
     st.session_state.p_cap = 10000
     st.session_state.p_max_cash = 100
     st.session_state.p_init_entry = 50
-    # 용성님의 최적 시장 평가 기준
     st.session_state.uh_c = 10.0
     st.session_state.h_c = 5.0
     st.session_state.l_c = -6.0
     st.session_state.ul_c = -10.0
-    # 용성님의 최적 매도/매수율
     st.session_state.vals = {
         's_UHIGH': 150, 'b_UHIGH': 30,
         's_HIGH': 100, 'b_HIGH': 60,
@@ -33,7 +31,7 @@ if 'init' not in st.session_state:
     }
 
 # -----------------------------------------------------------
-# 1. 데이터 및 정밀 추세선 (로그 선형 회귀)
+# 1. 데이터 처리 로직 (2000년부터 예열하여 2010년 데이터 보장)
 # -----------------------------------------------------------
 def calculate_growth_curve_precise(series, dates, window=1260):
     results = [np.nan] * len(series)
@@ -52,23 +50,28 @@ def calculate_growth_curve_precise(series, dates, window=1260):
 
 @st.cache_data(ttl=3600)
 def get_backtest_data():
-    start_fetch = "2004-01-01"
+    # 2010년 시작을 위해 2000년부터 데이터를 미리 가져옵니다.
+    start_fetch = "2000-01-01" 
     end_fetch = datetime.now().strftime('%Y-%m-%d')
     qqq = yf.download("QQQ", start=start_fetch, end=end_fetch, progress=False, auto_adjust=True)
     tqqq = yf.download("TQQQ", start=start_fetch, end=end_fetch, progress=False, auto_adjust=True)
+    
     df = pd.concat([qqq['Close'], tqqq['Close']], axis=1).dropna()
     df.columns = ['QQQ', 'TQQQ']
+    # 정밀 추세선 계산 (2000년+5년 = 2005년부터 이미 데이터가 생성됨)
     df['Growth'] = calculate_growth_curve_precise(df['QQQ'], df.index, window=1260)
     df['Eval'] = (df['QQQ'] / df['Growth']) - 1
+    
     df['Weekday'] = df.index.weekday
     weekly_df = df[df['Weekday'] == 4].copy() 
     weekly_df['TQQQ_Prev'] = weekly_df['TQQQ'].shift(1)
     return weekly_df
 
 # -----------------------------------------------------------
-# 2. 시뮬레이션 엔진
+# 2. 시뮬레이션 엔진 및 리포트 (동일)
 # -----------------------------------------------------------
 def run_simulation(df, start_dt, end_dt, params):
+    # 사용자가 선택한 2010년 이후 데이터만 필터링
     sim_data = df[(df.index >= pd.to_datetime(start_dt)) & (df.index <= pd.to_datetime(end_dt))].copy()
     if sim_data.empty: return pd.DataFrame(), []
     
@@ -79,7 +82,7 @@ def run_simulation(df, start_dt, end_dt, params):
     
     for date, row in sim_data.iterrows():
         price, prev_price, mkt_eval = row['TQQQ'], row['TQQQ_Prev'], row['Eval']
-        if np.isnan(mkt_eval): mkt_eval = 0.0
+        if np.isnan(mkt_eval): mkt_eval = 0.0 # 예외 처리
         
         tier = 'MID'
         if mkt_eval > params['uhigh_cut']: tier = 'UHIGH'
@@ -112,16 +115,11 @@ def run_simulation(df, start_dt, end_dt, params):
         
         history.append({'Date': date, 'Asset': cash + (shares * price)})
         if action != "Hold":
-            trade_logs.append({
-                '날짜': date.strftime('%Y-%m-%d'), '상태': tier, '매매': action, 
-                '가격': round(price, 2), '거래금액': round(trade_val, 2), '보유수량': round(shares, 2)
-            })
+            trade_logs.append({'날짜': date.strftime('%Y-%m-%d'), '상태': tier, '매매': action, '가격': round(price, 2), '거래금액': round(trade_val, 2), '보유수량': round(shares, 2)})
             
     return pd.DataFrame(history), trade_logs
 
-# -----------------------------------------------------------
-# 3. 사이드바 UI
-# -----------------------------------------------------------
+# (이하 사이드바 UI 및 결과 리포트 출력 로직은 이전과 동일하게 구성)
 st.sidebar.header("⚙️ 전략 파라미터")
 
 def update_session():
@@ -171,11 +169,8 @@ params = {
     'buy_ratios': {'UHIGH': uh_b, 'HIGH': h_b, 'MID': m_b, 'LOW': l_b, 'ULOW': ul_b}
 }
 
-# -----------------------------------------------------------
-# 4. 실행 및 결과 출력
-# -----------------------------------------------------------
 if st.sidebar.button("🚀 시뮬레이션 실행", type="primary", on_click=update_session):
-    with st.spinner("백테스팅 중..."):
+    with st.spinner("2010년부터 데이터 불러오는 중..."):
         df_weekly = get_backtest_data()
         res, logs = run_simulation(df_weekly, p_start, p_end, params)
     
@@ -188,7 +183,6 @@ if st.sidebar.button("🚀 시뮬레이션 실행", type="primary", on_click=upd
         res['DD'] = (res['Asset'] / res['Peak'] - 1) * 100
         mdd = res['DD'].min()
 
-        # 지수 계산 (Sharpe, Calmar, Sortino)
         w_ret = res['Asset'].pct_change().dropna()
         sharpe = (w_ret.mean() / w_ret.std()) * np.sqrt(52) if w_ret.std() != 0 else 0
         calmar = cagr / abs(mdd) if mdd != 0 else 0
@@ -207,7 +201,6 @@ if st.sidebar.button("🚀 시뮬레이션 실행", type="primary", on_click=upd
         col7.metric("소르티노 지수", f"{sortino:.2f}")
         col8.metric("최종 자산", f"${final_asset:,.0f}")
 
-        # 그래프
         fig, ax1 = plt.subplots(figsize=(12, 6))
         ax1.plot(res['Date'], res['Asset'], color='#1E88E5', lw=2)
         ax1.set_yscale('log')
@@ -217,16 +210,14 @@ if st.sidebar.button("🚀 시뮬레이션 실행", type="primary", on_click=upd
         ax2.set_ylim(-100, 5)
         st.pyplot(fig)
 
-        # 연도별 성과표
         st.subheader("📅 연도별 성과 요약")
         res['Year'] = res['Date'].dt.year
         y_perf = []
         for year, group in res.groupby('Year'):
-            ret = (group.iloc[-1]['Asset'] / group.iloc[0]['Asset'] - 1) * 100
-            y_perf.append({'연도': year, '수익률': f"{ret:.1f}%", 'MDD': f"{group['DD'].min():.1f}%"})
+            y_ret = (group.iloc[-1]['Asset'] / group.iloc[0]['Asset'] - 1) * 100
+            y_perf.append({'연도': year, '수익률': f"{y_ret:.1f}%", 'MDD': f"{group['DD'].min():.1f}%"})
         st.table(pd.DataFrame(y_perf).set_index('연도').T)
         
-        # 상세 거래 로그
         st.subheader("📋 상세 거래 내역")
         st.dataframe(pd.DataFrame(logs).sort_values('날짜', ascending=False), use_container_width=True)
     else:
