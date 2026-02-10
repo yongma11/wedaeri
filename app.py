@@ -13,7 +13,7 @@ st.set_page_config(page_title="Wedaeri v1.1 Optimizer", layout="wide", page_icon
 st.title("📈 위대리 v1.1 (5-Tier) 최적화 시뮬레이터")
 
 # -----------------------------------------------------------
-# 1. 데이터 처리 로직 (생략 - 기존과 동일)
+# 1. 데이터 처리 로직 (기존과 동일)
 # -----------------------------------------------------------
 def calculate_growth_curve_precise(series, dates, window=1260):
     results = [np.nan] * len(series)
@@ -45,7 +45,7 @@ def get_backtest_data():
     return weekly_df.dropna()
 
 # -----------------------------------------------------------
-# 2. 시뮬레이션 엔진 (생략 - 기존과 동일)
+# 2. 시뮬레이션 엔진 (기존과 동일)
 # -----------------------------------------------------------
 def run_simulation(df, start_dt, end_dt, params):
     sim_data = df[(df.index >= pd.to_datetime(start_dt)) & (df.index <= pd.to_datetime(end_dt))].copy()
@@ -64,6 +64,7 @@ def run_simulation(df, start_dt, end_dt, params):
         elif mkt_eval < params['ulow_cut']: tier = 'ULOW'
         elif mkt_eval < params['low_cut']: tier = 'LOW'
         else: tier = 'MID'
+        
         action = "Hold"
         if shares > 0:
             current_value = shares * price
@@ -96,24 +97,18 @@ def run_simulation(df, start_dt, end_dt, params):
     return pd.DataFrame(history)
 
 # -----------------------------------------------------------
-# 3. 사이드바 설정 (설정 보존 로직)
+# 3. 사이드바 설정 (단위 수정: 5% 단위)
 # -----------------------------------------------------------
 st.sidebar.header("⚙️ 전략 파라미터")
 
-# 세션 상태 초기화 (처음 실행 시)
 if 'params' not in st.session_state:
     st.session_state.params = {
-        'initial_capital': 10000,
-        'max_cash_pct': 100,
+        'initial_capital': 10000, 'max_cash_pct': 100,
         'uhigh_cut': 10.0, 'high_cut': 7.0, 'low_cut': -5.0, 'ulow_cut': -10.0,
-        's_UHIGH': 100, 'b_UHIGH': 30,
-        's_HIGH': 70, 'b_HIGH': 50,
-        's_MID': 50, 'b_MID': 50,
-        's_LOW': 30, 'b_LOW': 70,
-        's_ULOW': 20, 'b_ULOW': 100
+        's_UHIGH': 100, 'b_UHIGH': 30, 's_HIGH': 70, 'b_HIGH': 50,
+        's_MID': 50, 'b_MID': 50, 's_LOW': 30, 'b_LOW': 70, 's_ULOW': 20, 'b_ULOW': 100
     }
 
-# 사이드바 입력창들
 p_start = st.sidebar.date_input("시작일", pd.to_datetime("2010-01-01"))
 p_end = st.sidebar.date_input("종료일", pd.to_datetime("2025-12-31"))
 p_cap = st.sidebar.number_input("초기 자본 ($)", value=st.session_state.params['initial_capital'], step=1000)
@@ -121,27 +116,27 @@ p_max_cash = st.sidebar.slider("최대 현금 투입 한도 (%)", 10, 100, st.se
 
 st.sidebar.divider()
 st.sidebar.subheader("📉 시장 평가 기준 (%)")
-uh_c = st.sidebar.number_input("초고평가(UHIGH) >", value=st.session_state.params['uhigh_cut'], step=0.5) / 100
-h_c = st.sidebar.number_input("고평가(HIGH) >", value=st.session_state.params['high_cut'], step=0.5) / 100
-l_c = st.sidebar.number_input("저평가(LOW) <", value=st.session_state.params['low_cut'], step=0.5) / 100
-ul_c = st.sidebar.number_input("초저평가(ULOW) <", value=st.session_state.params['ulow_cut'], step=0.5) / 100
+uh_c = st.sidebar.number_input("초고평가(UHIGH) >", value=st.session_state.params['uhigh_cut'], step=0.5, format="%.1f") / 100
+h_c = st.sidebar.number_input("고평가(HIGH) >", value=st.session_state.params['high_cut'], step=0.5, format="%.1f") / 100
+l_c = st.sidebar.number_input("저평가(LOW) <", value=st.session_state.params['low_cut'], step=0.5, format="%.1f") / 100
+ul_c = st.sidebar.number_input("초저평가(ULOW) <", value=st.session_state.params['ulow_cut'], step=0.5, format="%.1f") / 100
 
 st.sidebar.subheader("💰 티어별 매매율 (%)")
-def tier_control_v2(label):
+def tier_control_v3(label):
     st.sidebar.write(f"**[{label}]**")
     c1, c2 = st.sidebar.columns(2)
-    s = c1.number_input(f"매도%", 0, 500, st.session_state.params[f's_{label}'], step=10, key=f"input_s_{label}")
-    b = c2.number_input(f"매수%", 0, 500, st.session_state.params[f'b_{label}'], step=10, key=f"input_b_{label}")
+    # step=5로 변경하여 5% 단위 조절 가능
+    s = c1.number_input(f"매도%", 0, 500, st.session_state.params[f's_{label}'], step=5, key=f"input_s_{label}")
+    b = c2.number_input(f"매수%", 0, 500, st.session_state.params[f'b_{label}'], step=5, key=f"input_b_{label}")
     return s, b
 
-uh_s, uh_b = tier_control_v2("UHIGH")
-h_s, h_b = tier_control_v2("HIGH")
-m_s, m_b = tier_control_v2("MID")
-l_s, l_b = tier_control_v2("LOW")
-ul_s, ul_b = tier_control_v2("ULOW")
+uh_s, uh_b = tier_control_v3("UHIGH")
+h_s, h_b = tier_control_v3("HIGH")
+m_s, m_b = tier_control_v3("MID")
+l_s, l_b = tier_control_v3("LOW")
+ul_s, ul_b = tier_control_v3("ULOW")
 
-# 현재 설정값을 세션에 저장하는 함수
-def save_current_params():
+def save_params():
     st.session_state.params.update({
         'initial_capital': p_cap, 'max_cash_pct': p_max_cash,
         'uhigh_cut': uh_c*100, 'high_cut': h_c*100, 'low_cut': l_c*100, 'ulow_cut': ul_c*100,
@@ -157,30 +152,37 @@ params = {
 }
 
 # -----------------------------------------------------------
-# 4. 실행 및 결과 표시
+# 4. 실행 및 리포트
 # -----------------------------------------------------------
-if st.sidebar.button("🚀 시뮬레이션 실행", type="primary", on_click=save_current_params):
-    with st.spinner("분석 중..."):
+if st.sidebar.button("🚀 시뮬레이션 실행", type="primary", on_click=save_params):
+    with st.spinner("백테스팅 진행 중..."):
         df_weekly = get_backtest_data()
         res = run_simulation(df_weekly, p_start, p_end, params)
         
     if not res.empty:
-        # 성과 리포트 출력 (생략 - 기존과 동일하게 그래프 및 표 출력)
         final_asset = res.iloc[-1]['Asset']
         total_return = (final_asset / p_cap - 1) * 100
         res['Peak'] = res['Asset'].cummax()
         res['DD'] = (res['Asset'] / res['Peak'] - 1) * 100
         
-        st.subheader("🚩 성과 요약")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("총수익률", f"{total_return:,.1f}%")
-        c2.metric("CAGR", f"{((final_asset/p_cap)**(365/((p_end-p_start).days))-1)*100:.2f}%")
-        c3.metric("MDD", f"{res['DD'].min():.1f}%")
+        st.subheader("🚩 성과 요약 리포트")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("총수익률", f"{total_return:,.1f}%")
+        m2.metric("CAGR", f"{((final_asset/p_cap)**(365/((p_end-p_start).days))-1)*100:.2f}%")
+        m3.metric("MDD", f"{res['DD'].min():.1f}%")
         
-        st.subheader("📈 통합 그래프")
+        st.subheader("📈 자산 성장 및 MDD")
         fig, ax1 = plt.subplots(figsize=(12, 5))
         ax1.plot(res['Date'], res['Asset'], color='#1E88E5', lw=2)
         ax1.set_yscale('log')
         ax2 = ax1.twinx()
         ax2.fill_between(res['Date'], res['DD'], 0, color='red', alpha=0.2)
         st.pyplot(fig)
+        
+        res['Year'] = res['Date'].dt.year
+        yearly_perf = []
+        for year, group in res.groupby('Year'):
+            y_ret = (group.iloc[-1]['Asset'] / group.iloc[0]['Asset'] - 1) * 100
+            yearly_perf.append({'연도': year, '수익률': f"{y_ret:.1f}%", 'MDD': f"{group['DD'].min():.1f}%"})
+        st.table(pd.DataFrame(yearly_perf).set_index('연도').T)
+
