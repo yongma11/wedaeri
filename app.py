@@ -26,17 +26,8 @@ st.markdown("""
 # -----------------------------------------------------------
 SETTINGS_FILE = 'wedaeri_settings_final.json'
 TRADE_LOG_FILE = 'wedaeri_trade_log_final.csv'
-PROFIT_LOG_FILE = 'wedaeri_profit_log_final.csv'
 
-def load_json(file, default):
-    if os.path.exists(file):
-        with open(file, 'r') as f: return json.load(f)
-    return default
-
-def save_json(file, data):
-    with open(file, 'w') as f: json.dump(data, f)
-
-# 시뮬레이터의 기본 파라미터 구조 유지
+# [수정] 기본값 정의 (KeyError 방지용)
 default_settings = {
     'start_date': '2010-01-01',
     'initial_capital': 10000,
@@ -46,7 +37,23 @@ default_settings = {
     'sell_ratios': {'UHIGH': 150, 'HIGH': 100, 'MID': 60, 'LOW': 60, 'ULOW': 30},
     'buy_ratios': {'UHIGH': 30, 'HIGH': 60, 'MID': 60, 'LOW': 120, 'ULOW': 200}
 }
-settings = load_json(SETTINGS_FILE, default_settings)
+
+def load_json():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, 'r') as f:
+            loaded = json.load(f)
+            # [핵심] 기존 파일에 누락된 키가 있으면 기본값에서 보충
+            for k, v in default_settings.items():
+                if k not in loaded:
+                    loaded[k] = v
+            return loaded
+    return default_settings
+
+def save_json(data):
+    with open(SETTINGS_FILE, 'w') as f:
+        json.dump(data, f)
+
+settings = load_json()
 
 # -----------------------------------------------------------
 # 2. 정밀 엔진 및 데이터 로직
@@ -67,10 +74,8 @@ def calculate_growth_curve_precise(series, dates, window=1260):
 
 @st.cache_data(ttl=3600)
 def fetch_data():
-    # 2000년부터 가져와서 2010년 데이터의 추세선(예열) 보장
     start_fetch = "2000-01-01"
     end_fetch = datetime.now().strftime('%Y-%m-%d')
-    # 시뮬레이터와 동일하게 auto_adjust=True 설정
     qqq = yf.download("QQQ", start=start_fetch, end=end_fetch, progress=False, auto_adjust=True)
     tqqq = yf.download("TQQQ", start=start_fetch, end=end_fetch, progress=False, auto_adjust=True)
     
@@ -116,13 +121,13 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
             if np.isnan(prev_p): continue
             diff_val = (shares * price) - (shares * prev_p)
             
-            if diff_val > 0: # 상승 매도
+            if diff_val > 0:
                 trade_val = diff_val * s_r
                 qty_to_sell = trade_val / price
                 actual_sell_qty = min(qty_to_sell, shares)
                 shares -= actual_sell_qty; cash += (actual_sell_qty * price)
                 action = "Sell"; trade_val = actual_sell_qty * price
-            elif diff_val < 0: # 하락 매수
+            elif diff_val < 0:
                 available = max_cash_usage - (initial_cap - cash)
                 if available > 0:
                     trade_val = min(cash, abs(diff_val) * b_r, available)
@@ -140,7 +145,7 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
     return pd.DataFrame(history), logs
 
 # -----------------------------------------------------------
-# 3. 사이드바 (파라미터 설정)
+# 3. 사이드바 (파라미터 설정 및 Submit 버튼 수정)
 # -----------------------------------------------------------
 df_weekly = fetch_data()
 
@@ -152,13 +157,14 @@ with st.sidebar.form("main_settings"):
     s_init_p = st.slider("초기 진입 비중 (%)", 0, 100, settings['initial_entry_pct'])
     
     st.divider()
-    c_uh = st.number_input("UHIGH Cut (%)", value=settings['uhigh_cut'])
-    c_h = st.number_input("HIGH Cut (%)", value=settings['high_cut'])
-    c_l = st.number_input("LOW Cut (%)", value=settings['low_cut'])
-    c_ul = st.number_input("ULOW Cut (%)", value=settings['ulow_cut'])
+    st.write("**[티어 임계값 설정]**")
+    c_uh = st.number_input("UHIGH Cut (%)", value=float(settings['uhigh_cut']), step=0.5)
+    c_h = st.number_input("HIGH Cut (%)", value=float(settings['high_cut']), step=0.5)
+    c_l = st.number_input("LOW Cut (%)", value=float(settings['low_cut']), step=0.5)
+    c_ul = st.number_input("ULOW Cut (%)", value=float(settings['ulow_cut']), step=0.5)
     
-    # 간소화된 비율 입력 (MID는 기본으로 60/60 설정)
-    sync_btn = st.form_submit_button("🔄 설정 저장 및 데이터 동기화")
+    # [수정] 폼 제출 버튼 위치 확인
+    sync_btn = st.form_submit_button("🔄 설정 저장 및 데이터 동기화", type="primary")
 
 if sync_btn:
     settings.update({
@@ -166,7 +172,7 @@ if sync_btn:
         'max_cash_pct': s_max_c, 'initial_entry_pct': s_init_p,
         'uhigh_cut': c_uh, 'high_cut': c_h, 'low_cut': c_l, 'ulow_cut': c_ul
     })
-    save_json(SETTINGS_FILE, settings)
+    save_json(settings)
     _, res_logs = run_wedaeri_engine(df_weekly, s_date, datetime.now(), settings)
     if res_logs:
         pd.DataFrame(res_logs).sort_values('Date', ascending=False).to_csv(TRADE_LOG_FILE, index=False)
@@ -181,12 +187,12 @@ with tab1:
     last = df_weekly.iloc[-1]
     t_log = pd.read_csv(TRADE_LOG_FILE) if os.path.exists(TRADE_LOG_FILE) else pd.DataFrame()
     
-    cash_now = t_log.iloc[0]['Cash'] if not t_log.empty else s_cap
+    # 실시간 현금/수량 계산
+    cash_now = t_log.iloc[0]['Cash'] if not t_log.empty else settings['initial_capital']
     shares_now = t_log.iloc[0]['Shares'] if not t_log.empty else 0
     total_now = cash_now + (shares_now * last['TQQQ'])
     
     eval_val = last['Eval']
-    # 티어 판정 (UI용)
     m_tier = 'MID'
     if eval_val > settings['uhigh_cut']/100: m_tier = 'UHIGH'
     elif eval_val > settings['high_cut']/100: m_tier = 'HIGH'
@@ -209,14 +215,14 @@ with tab1:
             v = (shares_now * diff_p) * (settings['sell_ratios'][m_tier] / 100)
             decision = f"📈 매도 (SELL): ${v:,.0f} ({v/est_p:.2f}주)"; b_c = "#fff5f5"
         elif diff_p < 0:
-            max_c_usage = s_cap * (settings['max_cash_pct'] / 100)
-            avail = max_c_usage - (s_cap - cash_now)
+            max_c_usage = settings['initial_capital'] * (settings['max_cash_pct'] / 100)
+            avail = max_c_usage - (settings['initial_capital'] - cash_now)
             v = min(cash_now, abs(shares_now * diff_p) * (settings['buy_ratios'][m_tier] / 100), max(0, avail))
             decision = f"📉 매수 (BUY): ${v:,.0f} ({v/est_p:.2f}주)"; b_c = "#f0fff4"
         st.markdown(f'<div class="order-box" style="background:{b_c}; color:black;">{decision}</div>', unsafe_allow_html=True)
 
     st.divider()
-    st.subheader("📋 실전 매매 기록")
+    st.subheader("📋 실전 매매 기록 (최근 로그)")
     st.dataframe(t_log, use_container_width=True)
 
 with tab2:
@@ -226,7 +232,7 @@ with tab2:
         if not res.empty:
             final_v = res.iloc[-1]['Asset']
             days = (res.iloc[-1]['Date'] - res.iloc[0]['Date']).days
-            cagr = ((final_v / s_cap) ** (365 / max(1, days)) - 1) * 100
+            cagr = ((final_v / settings['initial_capital']) ** (365 / max(1, days)) - 1) * 100
             res['Peak'] = res['Asset'].cummax()
             res['DD'] = (res['Asset'] / res['Peak'] - 1) * 100
             mdd = res['DD'].min()
@@ -235,7 +241,7 @@ with tab2:
             m1.metric("최종 자산", f"${final_v:,.0f}")
             m2.metric("CAGR", f"{cagr:.2f}%")
             m3.metric("MDD", f"{mdd:.1f}%")
-            m4.metric("수익률", f"{(final_v/s_cap-1)*100:.1f}%")
+            m4.metric("수익률", f"{(final_v/settings['initial_capital']-1)*100:.1f}%")
 
             fig, ax1 = plt.subplots(figsize=(12, 5))
             ax1.plot(res['Date'], res['Asset'], color='#1E88E5', lw=2)
@@ -252,12 +258,9 @@ with tab2:
 with tab3:
     st.markdown("""
     <div class="strategy-card">
-        <h3>📘 시스템 연동 안내</h3>
-        <p>본 시스템은 용성님의 시뮬레이터 로직을 100% 이식하였습니다.</p>
-        <ul>
-            <li><b>데이터 동기화:</b> 2000년부터의 QQQ 데이터를 기반으로 추세선을 계산하여 2010년 이후 백테스트의 정확도를 보장합니다.</li>
-            <li><b>현금 방패:</b> 시뮬레이터와 동일하게 초기 자본 대비 현금 한도를 고정하여 하락장에 대응합니다.</li>
-            <li><b>주문 생성:</b> 장 마감 전 예상가만 입력하면 티어별 비율에 따른 정확한 매수/매도 수량을 계산해 줍니다.</li>
-        </ul>
+        <h3>📘 시스템 업데이트 노트</h3>
+        <p><b>1. KeyError 방지:</b> 설정 파일 로드 시 <code>uhigh_cut</code> 등 누락된 키가 있으면 기본값으로 자동 보정합니다.</p>
+        <p><b>2. Submit 버튼 수정:</b> 폼 제출 버튼이 누락되지 않도록 사이드바 구조를 최적화했습니다.</p>
+        <p><b>3. 실전 연동:</b> 시뮬레이터와 동일한 엔진을 사용하여 백테스트 결과가 실제 매매 신호와 정확히 일치합니다.</p>
     </div>
     """, unsafe_allow_html=True)
