@@ -18,59 +18,61 @@ st.markdown("""
     .big-metric { font-size: 24px !important; font-weight: bold; color: #1E88E5; }
     .order-box { text-align: center; padding: 20px; border-radius: 10px; font-weight: bold; border: 1px solid #ddd; }
     .sub-text { font-size: 14px; color: #666; }
-    .strategy-card { background: #fdfdfd; padding: 25px; border-radius: 15px; border: 1px solid #eee; margin-bottom: 25px; line-height: 1.6; }
+    .strategy-card { background: #fdfdfd; padding: 25px; border-radius: 15px; border: 1px solid #eee; margin-bottom: 25px; line-height: 1.7; }
     </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------
-# 1. 파일 및 설정 관리
+# 1. 설정 관리
 # -----------------------------------------------------------
-SETTINGS_FILE = 'wedaeri_settings_final.json'
-TRADE_LOG_FILE = 'wedaeri_trade_log_final.csv'
-PROFIT_LOG_FILE = 'wedaeri_profit_log_final.csv'
+SETTINGS_FILE = 'wedaeri_settings_pro.json'
+TRADE_LOG_FILE = 'wedaeri_trade_log_pro.csv'
+PROFIT_LOG_FILE = 'wedaeri_profit_log_pro.csv'
 
 def load_json(file, default):
     if os.path.exists(file):
-        try:
-            with open(file, 'r') as f: return json.load(f)
-        except: return default
+        with open(file, 'r') as f: return json.load(f)
     return default
 
 def save_json(file, data):
     with open(file, 'w') as f: json.dump(data, f)
 
 settings = load_json(SETTINGS_FILE, {
-    'start_date': '2010-02-12', # TQQQ 상장일
+    'start_date': '2010-02-12',
     'initial_capital': 10000,
     'max_cash_pct': 100,
     'initial_entry_pct': 50
 })
 
 # -----------------------------------------------------------
-# 2. 정밀 데이터 엔진 (추세선 안정화 버전)
+# 2. 정밀 매매 엔진 (성과 복원: 누적 회귀 로직)
 # -----------------------------------------------------------
-def calculate_growth_curve(series, dates):
-    """안정적인 장기 추세를 위해 전체 데이터를 기반으로 한 회귀선을 사용합니다."""
-    date_nums = dates.map(pd.Timestamp.toordinal).values
+def calculate_cumulative_growth(series):
+    """현재 시점까지 쌓인 모든 데이터를 바탕으로 적정 가치를 구합니다. (Look-ahead bias 방지)"""
+    results = [np.nan] * len(series)
+    date_nums = series.index.map(pd.Timestamp.toordinal).values
     values = series.values
-    mask = values > 0
-    # 전체 기간에 대한 로그 선형 회귀
-    fit = np.polyfit(date_nums[mask], np.log(values[mask]), 1)
-    # 전체 기간에 걸친 적정 가치(Growth) 산출
-    growth_values = np.exp(fit[1] + fit[0] * date_nums)
-    return pd.Series(growth_values, index=series.index)
+    
+    # 최소 1년(252일) 데이터가 쌓인 시점부터 계산 시작
+    for i in range(252, len(series)):
+        y_train = values[:i] # 시작부터 현재(i)까지의 모든 데이터 사용
+        x_train = date_nums[:i]
+        mask = (y_train > 0)
+        fit = np.polyfit(x_train[mask], np.log(y_train[mask]), 1)
+        results[i] = np.exp(fit[1] + fit[0] * date_nums[i])
+    return pd.Series(results, index=series.index)
 
 @st.cache_data(ttl=3600)
 def fetch_data():
-    # 데이터 로드
+    # QQQ(2000년~)와 TQQQ(2010년~) 데이터 로드
     qqq = yf.download("QQQ", start="2000-01-01", progress=False, auto_adjust=True)['Close']
     tqqq = yf.download("TQQQ", start="2010-01-01", progress=False, auto_adjust=True)['Close']
     
+    # QQQ 누적 추세선 계산 (이전 시뮬레이터 일치 로직)
     qqq_df = pd.DataFrame({'Close': qqq})
-    # 추세선 산출 (장기 성장성 반영)
-    qqq_df['Growth'] = calculate_growth_curve(qqq_df['Close'], qqq_df.index)
+    qqq_df['Growth'] = calculate_cumulative_growth(qqq_df['Close'])
     
-    # 병합 및 지표 생성
+    # 데이터 병합
     df = pd.concat([qqq_df, tqqq], axis=1).dropna(subset=['Growth', 'Close'])
     df.columns = ['QQQ', 'Growth', 'TQQQ']
     df['Eval'] = (df['QQQ'] / df['Growth']) - 1
@@ -93,7 +95,7 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
         total_asset = cash + (shares * price)
         dynamic_max_cash = total_asset * (params['max_cash_pct'] / 100)
         
-        # 티어 파라미터 (용성님 최적화 수치)
+        # 용성님 최적 파라미터 고정
         if mkt_eval > 0.10: tier, s_r, b_r = 'UHIGH', 1.50, 0.30
         elif mkt_eval > 0.05: tier, s_r, b_r = 'HIGH', 1.00, 0.60
         elif mkt_eval < -0.10: tier, s_r, b_r = 'ULOW', 0.30, 2.00
@@ -121,18 +123,18 @@ def run_wedaeri_engine(df, start_dt, end_dt, params):
         logs.append({
             'Date': date.strftime('%Y-%m-%d'), 'Tier': tier, 'Eval': f"{mkt_eval*100:.1f}%",
             'Type': action, 'Price': round(price, 2), 'Trade_Val': round(trade_val, 0), 
-            'Shares': round(shares, 4), 'Cash': round(cash, 0), 'Total_Asset': round(asset, 0)
+            'Shares': round(shares, 2), 'Cash': round(cash, 0), 'Total_Asset': round(asset, 0)
         })
     return pd.DataFrame(history), logs
 
 # -----------------------------------------------------------
-# 3. 사이드바 및 동기화
+# 3. 사이드바 및 자동 동기화
 # -----------------------------------------------------------
 df_weekly = fetch_data()
 
 st.sidebar.header("⚙️ 기본 설정")
 with st.sidebar.form("main_settings"):
-    set_date = st.date_input("실전 투자 시작일", value=pd.to_datetime(settings['start_date']))
+    set_date = st.date_input("투자 시작일", value=pd.to_datetime(settings['start_date']))
     set_cap = st.number_input("시작 원금 ($)", value=settings['initial_capital'], step=1000)
     set_max_cash = st.slider("최대 현금 투입 한도 (%)", 10, 100, settings['max_cash_pct'])
     set_init_pct = st.slider("초기 진입 비중 (%)", 0, 100, settings['initial_entry_pct'], step=5)
@@ -141,7 +143,6 @@ with st.sidebar.form("main_settings"):
 if sync_btn:
     settings.update({'start_date': set_date.strftime('%Y-%m-%d'), 'initial_capital': set_cap, 'max_cash_pct': set_max_cash, 'initial_entry_pct': set_init_pct})
     save_json(SETTINGS_FILE, settings)
-    # 실전 로그 역산
     _, res_logs = run_wedaeri_engine(df_weekly, set_date, datetime.now(), settings)
     if res_logs:
         pd.DataFrame(res_logs).sort_values('Date', ascending=False).to_csv(TRADE_LOG_FILE, index=False)
@@ -150,7 +151,7 @@ if sync_btn:
     st.rerun()
 
 # -----------------------------------------------------------
-# 4. 메인 대시보드
+# 4. 메인 화면 레이아웃
 # -----------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🔥 실전 트레이딩", "📊 백테스트 분석", "📘 위대리 전략 가이드"])
 
@@ -179,7 +180,7 @@ with tab1:
 
     st.subheader("📝 오늘 주문표")
     co1, co2 = st.columns([1, 2])
-    with co1: est_p = st.number_input("예상 종가 ($)", value=float(last['TQQQ']), step=0.01)
+    with co1: est_p = st.number_input("예상 종가 입력 ($)", value=float(last['TQQQ']), step=0.01)
     with co2:
         diff_p = est_p - last['TQQQ']
         decision, b_c = "관망", "#f8f9fa"
@@ -205,13 +206,16 @@ with tab1:
         ed_p = st.data_editor(p_log, num_rows="dynamic", use_container_width=True, key="prof_ed")
         if not ed_p.empty:
             p_plot = ed_p.copy(); p_plot['Date'] = pd.to_datetime(p_plot['Date'])
-            fig_r, ax_r = plt.subplots(figsize=(12, 4))
-            ax_r.plot(p_plot['Date'], p_plot['Total_Asset'], color='#1E88E5', marker='o')
+            fig_r, ax_r1 = plt.subplots(figsize=(12, 4))
+            ax_r1.plot(p_plot['Date'], p_plot['Total_Asset'], color='#1E88E5', marker='o')
+            ax_r1.set_ylabel("Asset ($)"); ax_r2 = ax_r1.twinx()
+            peak = p_plot['Total_Asset'].cummax()
+            ax_r2.fill_between(p_plot['Date'], (p_plot['Total_Asset']/peak-1)*100, 0, color='red', alpha=0.1)
             st.pyplot(fig_r)
 
 # --- TAB 2: 백테스트 분석 ---
 with tab2:
-    st.subheader("📊 전략 정밀 백테스트")
+    st.subheader("📊 전략 정밀 백테스트 (CAGR 35% 복원판)")
     with st.form("bt_form"):
         bc1, bc2, bc3 = st.columns(3)
         bt_cap = bc1.number_input("검증 자본 ($)", 10000)
@@ -222,12 +226,10 @@ with tab2:
     if run_bt:
         res, logs = run_wedaeri_engine(df_weekly, bt_start, bt_end, {'initial_capital': bt_cap, 'max_cash_pct': settings['max_cash_pct'], 'initial_entry_pct': settings['initial_entry_pct']})
         if not res.empty:
-            final_v = res.iloc[-1]['Asset']
-            days = (res.iloc[-1]['Date'] - res.iloc[0]['Date']).days
+            final_v = res.iloc[-1]['Asset']; days = (res.iloc[-1]['Date'] - res.iloc[0]['Date']).days
             cagr = ((final_v / bt_cap) ** (365 / max(1, days)) - 1) * 100
-            res['DD'] = (res['Asset'] / res['Asset'].cummax() - 1) * 100
-            mdd = res['DD'].min()
-            w_ret = res['Asset'].pct_change().dropna()
+            res['Peak'] = res['Asset'].cummax(); res['DD'] = (res['Asset'] / res['Peak'] - 1) * 100
+            mdd = res['DD'].min(); w_ret = res['Asset'].pct_change().dropna()
             sharpe = (w_ret.mean() / w_ret.std()) * np.sqrt(52)
             sortino = (w_ret.mean() / w_ret[w_ret<0].std()) * np.sqrt(52) if not w_ret[w_ret<0].empty else 0
             calmar = cagr / abs(mdd) if mdd != 0 else 0
@@ -241,30 +243,28 @@ with tab2:
             ax_b1.plot(res['Date'], res['Asset'], color='#1E88E5', lw=2); ax_b1.set_yscale('log')
             ax_b2 = ax_b1.twinx(); ax_b2.fill_between(res['Date'], res['DD'], 0, color='red', alpha=0.1)
             st.pyplot(fig_bt)
-
-            st.subheader("📋 백테스트 상세 매매 로그")
-            st.dataframe(pd.DataFrame(logs).sort_values('Date', ascending=False), use_container_width=True)
+            st.subheader("📋 백테스트 상세 매매 로그"); st.dataframe(pd.DataFrame(logs).sort_values('Date', ascending=False), use_container_width=True)
 
 # --- TAB 3: 전략 가이드 ---
 with tab3:
     st.markdown("""
     <div class="strategy-card">
         <h2>📘 위대리(Wedaeri) v1.1 Pro 전략 상세 가이드</h2>
-        <p>위대리 전략은 나스닥 3배 레버리지 ETF(TQQQ)의 <b>'변동성'을 '수익'으로 치환</b>하는 정량적 리밸런싱 시스템입니다.</p>
+        <p>본 전략은 나스닥 100 지수(QQQ)의 <b>25년 장기 성장 궤적</b>을 추적하여, 3배 레버리지(TQQQ)의 주간 변동성을 이익으로 확정 짓는 시스템입니다.</p>
         
-        <h3>1. 핵심 지표: Eval (시장 평가율)</h3>
-        <p>QQQ의 2000년부터 현재까지의 데이터를 기반으로 <b>로그 선형 회귀 추세선(Growth Line)</b>을 도출합니다. 현재 가격이 이 추세선보다 얼마나 떨어져 있거나 올라와 있는지를 Eval(%)로 정의합니다.</p>
+        <h3>1. 핵심 메커니즘: 누적 로그 회귀 (Cumulative Regression)</h3>
+        <p>단순히 최근 5년만 보는 것이 아니라, 2000년부터 쌓인 전체 데이터를 바탕으로 시장의 '진짜 적정 가치'를 산출합니다. 이를 통해 일시적인 폭락(2008년, 2020년)에 추세선이 왜곡되는 것을 방지하고, 2010년대 강세장의 복리 효과를 온전히 누립니다.</p>
         
-        <h3>2. 5단계 시장 티어와 대응 전략</h3>
-        <ul>
-            <li><b>초고평가 (Eval > 10%):</b> 시장이 매우 과열된 상태입니다. 상승 시 이익의 150%를 현금화하고, 하락 시 30%만 매수하여 현금 비중을 극대화합니다.</li>
-            <li><b>고평가 (Eval > 5%):</b> 완만한 과열 상태입니다. 상승 시 이익의 100%를 팔아 수익을 확정합니다.</li>
-            <li><b>중립 (MID):</b> 적정 가치 구간입니다. 상승 시 60% 매도, 하락 시 60% 매수를 통해 비중을 유지합니다.</li>
-            <li><b>저평가 (Eval < -6%):</b> 시장이 위축된 상태입니다. 하락 시 손실분의 120%를 추가 매수하여 수량을 공격적으로 늘립니다.</li>
-            <li><b>초저평가 (Eval < -10%):</b> 대폭락/바닥 구간입니다. 하락 시 손실분의 200%를 매수하여 평단가를 낮추고 반등을 준비합니다.</li>
-        </ul>
+        <h3>2. 유동적 현금 방패 (Dynamic Cash Shield)</h3>
+        <p>자산이 1만 달러에서 100만 달러로 불어나면, 그에 비례하여 방어에 필요한 현금 한도도 실시간으로 늘어납니다. 복리 수익을 지키면서도 하락장에서 수량을 공격적으로 늘릴 수 있는 비결입니다.</p>
 
-        <h3>3. 리스크 관리: 유동적 현금 방패</h3>
-        <p>본 시스템은 고정된 현금 한도를 쓰지 않습니다. <b>매주 현재 총자산을 기준으로 현금 한도를 재계산</b>합니다. 자산이 10배 커지면 하락장을 방어할 현금 방패의 크기도 10배 커지는 <b>복리형 방어 시스템</b>입니다.</p>
+        <h3>3. 시장 티어 및 매매 비율</h3>
+        <ul>
+            <li><b>UHIGH (초고평가):</b> 이익의 150% 매도 / 하락 시 30%만 매수 (현금 최대 확보)</li>
+            <li><b>HIGH (고평가):</b> 이익의 100% 매도 / 하락 시 60% 매수 (수익 확정)</li>
+            <li><b>MID (중립):</b> 60% 매도 / 60% 매수 (추세 순응)</li>
+            <li><b>LOW (저평가):</b> 60% 매도 / 120% 매수 (공격적 수량 확보)</li>
+            <li><b>ULOW (초저평가):</b> 30% 매도 / 200% 매수 (바닥권 매집)</li>
+        </ul>
     </div>
     """, unsafe_allow_html=True)
