@@ -10,7 +10,7 @@ from datetime import datetime, date
 # -----------------------------------------------------------
 # 0. 기본 설정 & 스타일
 # -----------------------------------------------------------
-st.set_page_config(page_title="Wedaeri Quantum T-Flow v1.9.1", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Wedaeri Quantum T-Flow v1.9.2", layout="wide", page_icon="📈")
 
 st.markdown("""
     <style>
@@ -25,7 +25,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------
-# 1. 설정 및 데이터 관리 (KeyError 및 Duplicate Form 에러 방지)
+# 1. 설정 및 데이터 관리
 # -----------------------------------------------------------
 SETTINGS_FILE = 'wedaeri_settings_v19.json'
 default_settings = {
@@ -40,7 +40,6 @@ def load_settings():
         try:
             with open(SETTINGS_FILE, 'r') as f:
                 loaded = json.load(f)
-                # 누락된 키가 있으면 기본값으로 채움
                 for k, v in default_settings.items():
                     if k not in loaded: loaded[k] = v
                 return loaded
@@ -50,7 +49,6 @@ def load_settings():
 def save_settings(data):
     with open(SETTINGS_FILE, 'w') as f: json.dump(data, f)
 
-# 세션 상태 초기화
 if 'settings' not in st.session_state:
     st.session_state.settings = load_settings()
 
@@ -119,14 +117,13 @@ def run_engine(df, start_dt, params):
     return pd.DataFrame(history), logs
 
 # -----------------------------------------------------------
-# 3. 사이드바 (에러 해결 핵심: Unique Key 부여)
+# 3. 사이드바 설정
 # -----------------------------------------------------------
 df_weekly = fetch_weekly_data()
 
 with st.sidebar:
     st.header("⚙️ 시스템 설정")
-    # [수정] 폼의 Key를 유니크하게 변경하여 중복 폼 에러 해결
-    with st.form(key="sidebar_settings_form_unique"):
+    with st.form(key="sidebar_settings_form_v192"):
         s_date = st.date_input("투자 시작일", value=pd.to_datetime(st.session_state.settings['start_date']))
         s_cap = st.number_input("투자 원금 ($)", value=st.session_state.settings['initial_capital'], step=1000)
         s_max_c = st.slider("현금 투입 한도 (%)", 10, 100, st.session_state.settings['max_cash_pct'])
@@ -138,7 +135,7 @@ if save_btn:
     save_settings(st.session_state.settings); st.rerun()
 
 # -----------------------------------------------------------
-# 4. 메인 화면 레이아웃
+# 4. 메인 대시보드
 # -----------------------------------------------------------
 tab1, tab2, tab3 = st.tabs(["🚀 실전 트레이딩", "📊 백테스트 분석", "📘 전략 로직"])
 
@@ -149,65 +146,108 @@ with tab1:
     
     # 상단 지표 바
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f'<div class="metric-container"><div class="metric-label">현재 날짜</div><div class="metric-value">{datetime.now().strftime("%Y-%m-%d")}</div></div>', unsafe_allow_html=True)
+    with c1: st.markdown(f'<div class="metric-container"><div class="metric-label">현재 날짜</div><div class="metric-value">{datetime.now().strftime("%Y-%m-%d")}</div></div>', unsafe_allow_html=True)
     with c2:
-        eval_val = last_mkt['Eval'] * 100
-        tier_str = "MID"
-        if eval_val > st.session_state.settings['uhigh_cut']: tier_str = "UHIGH (초고평가)"
-        elif eval_val > st.session_state.settings['high_cut']: tier_str = "HIGH (고평가)"
-        elif eval_val < st.session_state.settings['ulow_cut']: tier_str = "ULOW (초저평가)"
-        elif eval_val < st.session_state.settings['low_cut']: tier_str = "LOW (저평가)"
-        st.markdown(f'<div class="metric-container"><div class="metric-label">시장 모드</div><div class="metric-value" style="color:#f57c00;">{tier_str}</div><div style="font-size:12px; color:#999;">평가율 {eval_val:.2f}%</div></div>', unsafe_allow_html=True)
-    with c3:
-        diff = last_mkt['TQQQ'] - prev_mkt['TQQQ']
-        st.markdown(f'<div class="metric-container"><div class="metric-label">TQQQ 현재가</div><div class="metric-value">${last_mkt["TQQQ"]:.2f}</div><div style="font-size:12px; color:{"red" if diff>0 else "blue"};">전일대비 {diff:+.2f}</div></div>', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'<div class="metric-container"><div class="metric-label">매매 회차</div><div class="metric-value">{len(res_logs)}회차</div><div style="font-size:12px; color:#999;">주간 주기</div></div>', unsafe_allow_html=True)
+        eval_v = last_mkt['Eval'] * 100
+        t_str = "MID"
+        if eval_v > st.session_state.settings['uhigh_cut']: t_str = "UHIGH (초고평가)"
+        elif eval_v > st.session_state.settings['high_cut']: t_str = "HIGH (고평가)"
+        elif eval_v < st.session_state.settings['ulow_cut']: t_str = "ULOW (초저평가)"
+        elif eval_v < st.session_state.settings['low_cut']: t_str = "LOW (저평가)"
+        st.markdown(f'<div class="metric-container"><div class="metric-label">시장 모드</div><div class="metric-value" style="color:#f57c00;">{t_str}</div><div style="font-size:12px; color:#999;">평가율 {eval_v:.2f}%</div></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="metric-container"><div class="metric-label">TQQQ 현재가</div><div class="metric-value">${last_mkt["TQQQ"]:.2f}</div><div style="font-size:12px; color:#999;">전일대비 {last_mkt["TQQQ"]-prev_mkt["TQQQ"]:+.2f}</div></div>', unsafe_allow_html=True)
+    with c4: st.markdown(f'<div class="metric-container"><div class="metric-label">매매 회차</div><div class="metric-value">{len(res_logs)}회차</div><div style="font-size:12px; color:#999;">주간 매매</div></div>', unsafe_allow_html=True)
 
     st.write("---")
     
     # 오늘 주문표
     st.subheader("📝 오늘 주문표 (Daily Order)")
-    o_col1, o_col2 = st.columns([1, 2])
+    o_c1, o_c2 = st.columns([1, 2])
     if res_logs:
-        last_st = res_logs[-1]
-        with o_col1:
-            est_p = st.number_input("예상 종가 입력 ($)", value=float(last_mkt['TQQQ']), step=0.01)
-        with o_col2:
+        last_s = res_logs[-1]
+        with o_c1: est_p = st.number_input("예상 종가 입력 ($)", value=float(last_mkt['TQQQ']), step=0.01)
+        with o_c2:
             diff_p = est_p - last_mkt['TQQQ']
-            order_msg, box_class = "관망 (HOLD)", "hold-box"
+            order_m, b_class = "관망 (HOLD)", "hold-box"
             if diff_p > 0:
-                s_ratio = st.session_state.settings['sell_ratios'].get(last_st['시장평가'], 60) / 100
-                qty = int(min(round((last_st['보유수량'] * diff_p * s_ratio) / est_p), last_st['보유수량']))
-                if qty > 0: order_msg, box_class = f"📈 매도 (SELL): 기준가 ${est_p:.2f} ({qty}주)", "sell-box"
+                s_r = st.session_state.settings['sell_ratios'].get(last_s['시장평가'], 60) / 100
+                qty = int(min(round((last_s['보유수량'] * diff_p * s_r) / est_p), last_s['보유수량']))
+                if qty > 0: order_m, b_class = f"📈 매도 (SELL): 기준가 ${est_p:.2f} ({qty}주)", "sell-box"
             elif diff_p < 0:
-                b_ratio = st.session_state.settings['buy_ratios'].get(last_st['시장평가'], 60) / 100
-                max_lim = st.session_state.settings['initial_capital'] * (st.session_state.settings['max_cash_pct']/100)
-                avail = max_lim - (st.session_state.settings['initial_capital'] - last_st['예수금 ($)'])
-                qty = round(min(last_st['예수금 ($)'], abs(last_st['보유수량'] * diff_p * b_ratio), max(0, avail)) / est_p)
-                if qty > 0: order_msg, box_class = f"📉 매수 (BUY): 기준가 ${est_p:.2f} ({qty}주)", "buy-box"
-            st.markdown(f'<div class="order-result {box_class}">{order_msg}</div>', unsafe_allow_html=True)
+                b_r = st.session_state.settings['buy_ratios'].get(last_s['시장평가'], 60) / 100
+                max_l = st.session_state.settings['initial_capital'] * (st.session_state.settings['max_cash_pct']/100)
+                avail = max_l - (st.session_state.settings['initial_capital'] - last_s['예수금 ($)'])
+                qty = round(min(last_s['예수금 ($)'], abs(last_s['보유수량'] * diff_p * b_r), max(0, avail)) / est_p)
+                if qty > 0: order_m, b_class = f"📉 매수 (BUY): 기준가 ${est_p:.2f} ({qty}주)", "buy-box"
+            st.markdown(f'<div class="order-result {b_class}">{order_m}</div>', unsafe_allow_html=True)
 
     st.write("---")
 
-    # 내 계좌 현황
+    # 계좌 현황
     st.subheader("💰 내 계좌 현황")
     if res_logs:
         acc = res_logs[-1]
         a1, a2, a3, a4 = st.columns(4)
         a1.metric("총 보유 수량", f"{acc['보유수량']:,} 주")
         a2.metric("보유 현금", f"${acc['예수금 ($)']:,.0f}")
-        profit = acc['총자산 ($)'] - st.session_state.settings['initial_capital']
-        profit_p = (profit / st.session_state.settings['initial_capital']) * 100
-        a3.metric("총 평가 손익", f"${profit:,.0f}", f"{profit_p:+.1f}%")
+        prof = acc['총자산 ($)'] - st.session_state.settings['initial_capital']
+        a3.metric("총 평가 손익", f"${prof:,.0f}", f"{(prof/st.session_state.settings['initial_capital'])*100:+.1f}%")
         a4.metric("현재 총 자산", f"${acc['총자산 ($)']:,.0f}")
 
-    with st.expander("📜 상세 매매 히스토리 및 그래프 보기"):
+    with st.expander("📜 상세 매매 히스토리 및 그래프"):
         st.dataframe(pd.DataFrame(res_logs).sort_values('날짜', ascending=False), use_container_width=True)
-        res_df['Peak'] = res_df['Asset'].cummax()
-        res_df['DD'] = (res_df['Asset'] / res_df['Peak'] - 1) * 100
-        fig, ax1 = plt.subplots(figsize=(10, 4))
-        ax1.plot(res_df['Date'], res_df['Asset'], color='#1E88E5'); ax1.set_yscale('log')
-        ax2 = ax1.twinx(); ax2.fill_between(res_df['Date'], res_df['DD'], 0, color='red', alpha=0.1)
-        st.pyplot(fig)
+
+# --- TAB 2: 백테스트 분석 (복구 완료) ---
+with tab2:
+    st.subheader("🔍 백테스트 정밀 분석")
+    with st.form("backtest_analysis_form"):
+        ba1, ba2, ba3 = st.columns(3)
+        bt_c = ba1.number_input("테스트 원금 ($)", value=10000)
+        bt_s = ba2.date_input("테스트 시작일", value=date(2010, 2, 12))
+        bt_e = ba3.date_input("테스트 종료일", value=date.today())
+        run_bt = st.form_submit_button("🚀 분석 실행")
+
+    if run_bt:
+        bt_p = st.session_state.settings.copy()
+        bt_p['initial_capital'] = bt_c
+        b_df, b_logs = run_engine(df_weekly[df_weekly.index <= pd.to_datetime(bt_e)], bt_s.strftime('%Y-%m-%d'), bt_p)
+        
+        if not b_df.empty:
+            final_v = b_df.iloc[-1]['Asset']
+            ret = (final_v / bt_c - 1) * 100
+            days = (b_df.iloc[-1]['Date'] - b_df.iloc[0]['Date']).days
+            cagr = ((final_v / bt_c) ** (365 / max(1, days)) - 1) * 100
+            b_df['Peak'] = b_df['Asset'].cummax()
+            b_df['DD'] = (b_df['Asset'] / b_df['Peak'] - 1) * 100
+            mdd = b_df['DD'].min()
+            calmar = cagr / abs(mdd) if mdd != 0 else 0
+            w_ret = b_df['Asset'].pct_change().dropna()
+            sortino = (w_ret.mean() / w_ret[w_ret<0].std()) * np.sqrt(52) if not w_ret[w_ret<0].empty else 0
+            
+            # 지표 표시
+            i1, i2, i3, i4, i5 = st.columns(5)
+            i1.metric("최종 수익률", f"{ret:.1f}%")
+            i2.metric("CAGR", f"{cagr:.1f}%")
+            i3.metric("MDD", f"{mdd:.1f}%")
+            i4.metric("칼마 지수", f"{calmar:.2f}")
+            i5.metric("소르티노", f"{sortino:.2f}")
+
+            # 통합 그래프
+            fig, ax1 = plt.subplots(figsize=(12, 5))
+            ax1.plot(b_df['Date'], b_df['Asset'], color='#1E88E5', lw=2, label='자산 (Log)')
+            ax1.set_yscale('log'); ax1.set_ylabel("Asset Value ($)"); ax1.grid(True, alpha=0.2)
+            ax2 = ax1.twinx(); ax2.fill_between(b_df['Date'], b_df['DD'], 0, color='#E53935', alpha=0.2, label='MDD (%)')
+            ax2.set_ylabel("Drawdown (%)"); ax2.set_ylim(-100, 5)
+            st.pyplot(fig)
+            
+            # 연도별 성과
+            b_df['Year'] = b_df['Date'].dt.year
+            y_data = [{'연도': y, '수익률': f"{(g.iloc[-1]['Asset']/g.iloc[0]['Asset']-1)*100:.1f}%", 'MDD': f"{(g['Asset']/g['Asset'].cummax()-1).min()*100:.1f}%"} for y, g in b_df.groupby('Year')]
+            st.subheader("📅 연도별 성과 리포트")
+            st.table(pd.DataFrame(y_data).set_index('연도'))
+            st.subheader("📜 상세 백테스트 로그")
+            st.dataframe(pd.DataFrame(b_logs).sort_values('날짜', ascending=False), use_container_width=True)
+
+# --- TAB 3: 전략 로직 ---
+with tab3:
+    st.markdown("""<div class="strategy-card"><h3>📘 Wedaeri Quantum T-Flow 전략 로직</h3>...내용 생략...</div>""", unsafe_allow_html=True)
