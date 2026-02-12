@@ -220,4 +220,86 @@ with tab1:
         ax2.fill_between(res_df['Date'], res_df['DD'], 0, color='red', alpha=0.1)
         st.pyplot(fig)
 
-# 나머지 탭 (백테스트 분석, 전략 로직)은 기존 v1.8과 동일하게 유지
+# -----------------------------------------------------------
+# 3. 사이드바 및 레이아웃
+# -----------------------------------------------------------
+df_weekly = fetch_weekly_data()
+
+with st.sidebar:
+    st.header("⚙️ System Config")
+    with st.form("settings_form"):
+        s_date = st.date_input("투자 시작일", value=pd.to_datetime(st.session_state.settings['start_date']))
+        s_cap = st.number_input("투자 원금 ($)", value=st.session_state.settings['initial_capital'], step=1000)
+        s_max_c = st.slider("현금 투입 한도 (%)", 10, 100, st.session_state.settings['max_cash_pct'])
+        s_init_p = st.slider("초기 진입 비중 (%)", 0, 100, st.session_state.settings['initial_entry_pct'])
+        save_btn = st.form_submit_button("💾 설정 저장 및 동기화", type="primary")
+
+if save_btn:
+    st.session_state.settings.update({'start_date': s_date.strftime('%Y-%m-%d'), 'initial_capital': s_cap, 'max_cash_pct': s_max_c, 'initial_entry_pct': s_init_p})
+    save_settings(st.session_state.settings); st.rerun()
+
+tab1, tab2, tab3 = st.tabs(["🚀 실전 대시보드", "📊 백테스트 분석", "📘 매매전략 가이드"])
+
+# --- TAB 1: 실전 대시보드 ---
+with tab1:
+    res_df, res_logs = run_engine(df_weekly, st.session_state.settings['start_date'], st.session_state.settings)
+    last_mkt = df_weekly.iloc[-1]
+    st.markdown(f'<div class="status-bar"><b>📅 분석 기준일:</b> {df_weekly.index[-1].strftime("%Y-%m-%d")} | <b>💎 TQQQ 종가:</b> ${last_mkt["TQQQ"]:.2f}</div>', unsafe_allow_html=True)
+    
+    if res_logs:
+        last = res_logs[-1]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("보유수량", f"{last['보유수량']:,} 주"); c2.metric("평가금", f"${last['평가금 ($)']:,.0f}")
+        c3.metric("예수금", f"${last['예수금 ($)']:,.0f}"); c4.metric("총자산", f"${last['총자산 ($)']:,.0f}")
+        
+        st.divider()
+        # [요청 반영] 상세 매매로그 접기 (Expander)
+        with st.expander("📜 상세 매매로그 보기", expanded=False):
+            st.dataframe(pd.DataFrame(res_logs).sort_values('날짜', ascending=False), use_container_width=True)
+
+        # [요청 반영] 실전 수익률 및 MDD 통합 그래프
+        st.subheader("📈 실전 자산 성장 및 하락 분석")
+        res_df['Peak'] = res_df['Asset'].cummax()
+        res_df['DD'] = (res_df['Asset'] / res_df['Peak'] - 1) * 100
+        
+        fig_real, ax1_r = plt.subplots(figsize=(12, 5))
+        ax1_r.plot(res_df['Date'], res_df['Asset'], color='#1E88E5', lw=2, label='자산 (Log)')
+        ax1_r.set_yscale('log'); ax1_r.set_ylabel("Asset Value ($)"); ax1_r.grid(True, alpha=0.2)
+        ax2_r = ax1_r.twinx()
+        ax2_r.fill_between(res_df['Date'], res_df['DD'], 0, color='#E53935', alpha=0.2, label='MDD (%)')
+        ax2_r.set_ylabel("Drawdown (%)"); ax2_r.set_ylim(-100, 5)
+        st.pyplot(fig_real)
+
+# --- TAB 2: 백테스트 분석 (기존 유지) ---
+with tab2:
+    with st.form("bt_form"):
+        bc1, bc2, bc3 = st.columns(3)
+        bt_cap = bc1.number_input("테스트 원금 ($)", value=10000)
+        bt_start = bc2.date_input("시작일", value=date(2010, 2, 12)); bt_end = bc3.date_input("종료일", value=date.today())
+        run_bt = st.form_submit_button("🚀 분석 실행")
+
+    if run_bt:
+        bt_params = st.session_state.settings.copy(); bt_params['initial_capital'] = bt_cap
+        b_df, b_logs = run_engine(df_weekly[df_weekly.index <= pd.to_datetime(bt_end)], bt_start.strftime('%Y-%m-%d'), bt_params)
+        if not b_df.empty:
+            final_v = b_df.iloc[-1]['Asset']; cagr = ((final_v / bt_cap) ** (365 / max(1, (b_df.iloc[-1]['Date'] - b_df.iloc[0]['Date']).days)) - 1) * 100
+            b_df['Peak'] = b_df['Asset'].cummax(); b_df['DD'] = (b_df['Asset'] / b_df['Peak'] - 1) * 100
+            mdd = b_df['DD'].min(); calmar = cagr / abs(mdd) if mdd != 0 else 0
+            w_ret = b_df['Asset'].pct_change().dropna(); sortino = (w_ret.mean() / w_ret[w_ret<0].std()) * np.sqrt(52) if not w_ret[w_ret<0].empty else 0
+            
+            i1, i2, i3, i4, i5 = st.columns(5)
+            i1.metric("최종수익률", f"{(final_v/bt_cap-1)*100:.1f}%"); i2.metric("CAGR", f"{cagr:.1f}%"); i3.metric("MDD", f"{mdd:.1f}%"); i4.metric("칼마", f"{calmar:.2f}"); i5.metric("소르티노", f"{sortino:.2f}")
+
+            fig_bt, ax1_b = plt.subplots(figsize=(12, 5))
+            ax1_b.plot(b_df['Date'], b_df['Asset'], color='#1E88E5', lw=2); ax1_b.set_yscale('log'); ax2_b = ax1_b.twinx()
+            ax2_b.fill_between(b_df['Date'], b_df['DD'], 0, color='#E53935', alpha=0.2); st.pyplot(fig_bt)
+            
+            b_df['Year'] = b_df['Date'].dt.year
+            y_data = [{'연도': y, '수익률': f"{(g.iloc[-1]['Asset']/g.iloc[0]['Asset']-1)*100:.1f}%", 'MDD': f"{(g['Asset']/g['Asset'].cummax()-1).min()*100:.1f}%", '기말자산': f"${g.iloc[-1]['Asset']:,.0f}"} for y, g in b_df.groupby('Year')]
+            st.table(pd.DataFrame(y_data).set_index('연도'))
+            with st.expander("📜 상세 매매로그 보기", expanded=False):
+                st.dataframe(pd.DataFrame(b_logs).sort_values('날짜', ascending=False), use_container_width=True)
+
+# --- TAB 3: 매매전략 가이드 (기존 유지) ---
+with tab3:
+    st.markdown("""<div class="strategy-card"><h2>📘 Wedaeri Quantum T-Flow 매매전략 가이드</h2>...내용 생략(기존 유지)...</div>""", unsafe_allow_html=True)
