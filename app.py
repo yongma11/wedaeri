@@ -26,6 +26,7 @@ st.markdown("""
     .hold-box { background-color: #f8f9fa; color: #616161; border: 1px solid #e0e0e0; }
     .account-label { font-size: 14px; color: #666; margin-bottom: 5px; }
     .account-value { font-size: 28px; font-weight: 800; color: #222; }
+    .account-sub { font-size: 16px; color: #1E88E5; font-weight: 600; margin-top: 2px; }
     .strategy-card { background-color: #ffffff; padding: 35px; border-radius: 15px; border: 1px solid #e0e0e0; line-height: 1.9; }
     </style>
 """, unsafe_allow_html=True)
@@ -43,11 +44,10 @@ default_settings = {
     'buy_ratios': {'UHIGH': 30, 'HIGH': 60, 'MID': 60, 'LOW': 120, 'ULOW': 200}
 }
 
-# 미국 동부 시간(EST/EDT) 계산
 est = pytz.timezone('US/Eastern')
 now_est = datetime.now(est)
-is_friday = now_est.weekday() == 4  # 4는 금요일
-date_color = "#E53935" if is_friday else "#1E88E5" # 금요일엔 빨간색
+is_friday = now_est.weekday() == 4
+date_color = "#E53935" if is_friday else "#1E88E5"
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -62,7 +62,7 @@ def save_settings(data):
 if 'settings' not in st.session_state:
     st.session_state.settings = load_settings()
 
-@st.cache_data(ttl=300) # 미국 장 마감 반영을 위해 5분마다 갱신
+@st.cache_data(ttl=300)
 def fetch_data_v20():
     df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)['Close'].dropna()
     window = 1260
@@ -73,10 +73,8 @@ def fetch_data_v20():
         growth[i] = np.exp(fit[1] + fit[0] * date_nums[i])
     df['Growth'], df['Eval'] = growth, (df['QQQ'] / growth) - 1
     
-    # 금요일 혹은 가장 최근 거래일 포함 (미국 시간 동기화)
     weekly_df = df[df.index.weekday == 4].copy()
     if not is_friday and now_est.date() > weekly_df.index[-1].date():
-        # 금요일이 아니지만 최신 일간 데이터가 있다면 가상으로 포함 (주문표용)
         latest_day = df.iloc[-1:]
         weekly_df = pd.concat([weekly_df, latest_day]).drop_duplicates()
         
@@ -157,7 +155,7 @@ with tab1:
     last_mkt = df_weekly.iloc[-1]
     prev_mkt = df_weekly.iloc[-2]
     
-    # 상단 4분할 지표 바 (이미지 100% 반영)
+    # 상단 지표
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         st.markdown(f'<div class="metric-card"><div class="metric-label">현재 날짜 (미국시간)</div><div class="metric-value" style="color:{date_color};">{now_est.strftime("%Y-%m-%d (%a)")}</div></div>', unsafe_allow_html=True)
@@ -199,25 +197,39 @@ with tab1:
 
     st.write("---")
 
-    # 내 계좌 현황 (이미지 디자인 반영)
+    # [수정] 내 계좌 현황 (요청사항 반영: 주식평가금 및 현금비중 추가)
     st.subheader("💰 내 계좌 현황")
     if res_logs:
         acc = res_logs[-1]
+        cash_ratio = (acc['예수금'] / acc['총자산']) * 100
         a1, a2, a3, a4 = st.columns(4)
-        with a1: st.markdown(f'<div class="account-label">총 보유 수량</div><div class="account-value">{acc["보유수량"]:,} 주</div>', unsafe_allow_html=True)
-        with a2: st.markdown(f'<div class="account-label">보유 현금</div><div class="account-value">${acc["예수금"]:,.0f}</div>', unsafe_allow_html=True)
+        
+        with a1: 
+            st.markdown(f'''
+                <div class="account-label">총 보유 수량</div>
+                <div class="account-value">{acc["보유수량"]:,} 주</div>
+                <div class="account-sub">주식 평가금: ${acc["평가금"]:,.0f}</div>
+            ''', unsafe_allow_html=True)
+            
+        with a2: 
+            st.markdown(f'''
+                <div class="account-label">보유 현금</div>
+                <div class="account-value">${acc["예수금"]:,.0f}</div>
+                <div class="account-sub">현금 비중: {cash_ratio:.1f}%</div>
+            ''', unsafe_allow_html=True)
+            
         profit = acc['총자산'] - st.session_state.settings['initial_capital']
         profit_p = (profit / st.session_state.settings['initial_capital']) * 100
         with a3: st.markdown(f'<div class="account-label">총 평가 손익</div><div class="account-value">${profit:,.0f}</div><div style="color:{"red" if profit>0 else "blue"}; font-weight:bold;">↑ {profit_p:.1f}%</div>', unsafe_allow_html=True)
         with a4: st.markdown(f'<div class="account-label">현재 총 자산</div><div class="account-value">${acc["총자산"]:,.0f}</div>', unsafe_allow_html=True)
 
-    # 매매 로그 (Expander)
+    # 매매 로그
     with st.expander("📜 상세 매매 히스토리 보기"):
         st.dataframe(pd.DataFrame(res_logs).sort_values('날짜', ascending=False), use_container_width=True)
 
     st.write("---")
     
-    # 자산 성장 그래프 (이미지 하단 그래프 구현)
+    # 자산 성장 그래프
     st.subheader("📈 내 자산 성장 그래프 (Equity Curve)")
     if not res_df.empty:
         fig_real, ax = plt.subplots(figsize=(12, 5))
@@ -257,6 +269,8 @@ with tab2:
             ax2 = ax1.twinx(); ax2.fill_between(b_df['Date'], b_df['DD'], 0, color='#E53935', alpha=0.2)
             st.pyplot(fig_bt)
             st.dataframe(pd.DataFrame(b_logs).sort_values('날짜', ascending=False), use_container_width=True)
+
+
 
 # --- TAB 3: 전략 로직 상세 설명 (가독성 개선 버전) ---
 with tab3:
