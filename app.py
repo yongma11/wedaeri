@@ -38,7 +38,7 @@ st.markdown('<div class="program-title">Wedaeri Quantum T-Flow</div>', unsafe_al
 # -----------------------------------------------------------
 SETTINGS_FILE = 'wedaeri_settings_v20.json'
 default_settings = {
-    'start_date': '2025-01-01', 'initial_capital': 100000, 'max_cash_pct': 100, 'initial_entry_pct': 50,
+    'start_date': '2026-02-02', 'initial_capital': 100000, 'max_cash_pct': 100, 'initial_entry_pct': 59,
     'uhigh_cut': 10.0, 'high_cut': 5.0, 'low_cut': -6.0, 'ulow_cut': -10.0,
     'sell_ratios': {'UHIGH': 150, 'HIGH': 100, 'MID': 60, 'LOW': 60, 'ULOW': 30},
     'buy_ratios': {'UHIGH': 30, 'HIGH': 60, 'MID': 60, 'LOW': 120, 'ULOW': 200}
