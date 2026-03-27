@@ -34,10 +34,28 @@ def main():
     print("🚀 위대리 오토봇 가동 (GitHub Actions)")
     
     # 1. 환경 변수에서 구글 인증 정보 가져오기
-    creds_json = os.environ.get('GCP_CREDENTIALS')
-    if not creds_json:
+    creds_raw = os.environ.get('GCP_CREDENTIALS')
+    if not creds_raw:
         print("❌ 에러: GCP_CREDENTIALS 설정이 필요합니다.")
         return
+
+    try:
+        # [핵심 수정] 양 끝 공백을 제거하고 JSON으로 변환합니다.
+        creds_json = json.loads(creds_raw.strip())
+        
+        # 서비스 계정 인증
+        gc = gspread.service_account_from_dict(creds_json)
+        sh = gc.open_by_key(SHEET_KEY)
+        ws = sh.worksheet("위대리")
+        
+        # ... (이후 데이터 수집 및 매매 로직 동일) ...
+        print("✅ 구글 시트 연결 성공!")
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON 형식 오류 (Secrets 확인 필요): {e}")
+    except Exception as e:
+        # 여기서 JWT Signature 에러가 발생하면 아래 '최후의 수단'을 참고하세요.
+        print(f"❌ 오류 발생: {e}")
 
     # 2. 데이터 수집 및 실시간가 반영
     df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)['Close'].dropna()
