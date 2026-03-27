@@ -60,26 +60,53 @@ def main():
         ws = sh.worksheet("위대리")
         print("✅ 구글 시트 연결 성공!")
 
-       # 2. 데이터 수집 (3중 체크 방식으로 현재가 반영 강화)
-        print("🔍 실시간 가격 데이터를 수집 중입니다...")
+     # 2. 데이터 수집 (Multi-Index 및 데이터 누락 방어 로직 추가)
+        end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
         
-        # 방식 A: Ticker 객체의 history 사용 (가장 표준)
-        tqqq_obj = yf.Ticker("TQQQ")
-        live_data = tqqq_obj.history(period='1d', interval='1m')
+        # [수정] group_by='column' 설정을 통해 데이터 구조를 단순화합니다.
+        df_raw = yf.download(["QQQ", "TQQQ"], start="2000-01-01", end=end_date, auto_adjust=True, progress=False)
         
-        if not live_data.empty:
-            live_tqqq = live_data['Close'].iloc[-1]
+        # Multi-Index 대응: 컬럼이 복잡하게 얽힌 경우 'Close'만 추출
+        if isinstance(df_raw.columns, pd.MultiIndex):
+            df_close = df_raw['Close']
         else:
-            # 방식 B: history가 실패할 경우 fast_info 시도
-            try:
-                live_tqqq = tqqq_obj.fast_info['last_price']
-            except:
-                # 방식 C: 최악의 경우 최근 5일치 download 데이터의 마지막 값
-                temp_df = yf.download("TQQQ", period="5d", progress=False)
-                live_tqqq = temp_df['Close'].iloc[-1]
+            df_close = df_raw[['Close']] if 'Close' in df_raw.columns else df_raw
+            
+        df = df_close.dropna().reset_index()
+        if 'Date' not in df.columns:
+            df.rename(columns={'index': 'Date'}, inplace=True)
 
-        cur_p = round(float(live_tqqq), 2)
-        print(f"📊 확정된 TQQQ 현재가: ${cur_p}")
+        # 실시간가 추출 (가장 확실한 2중 체크)
+        try:
+            tqqq_ticker = yf.Ticker("TQQQ")
+            # 1순위: fast_info (가장 빠름)
+            live_tqqq = tqqq_ticker.fast_info['last_price']
+            # 2순위: 만약 위 값이 이상하면 history 사용
+            if live_tqqq is None or live_tqqq <= 0:
+                live_tqqq = tqqq_ticker.history(period="1d")['Close'].iloc[-1]
+            
+            qqq_ticker = yf.Ticker("QQQ")
+            live_qqq = qqq_ticker.fast_info['last_price']
+            if live_qqq is None or live_qqq <= 0:
+                live_qqq = qqq_ticker.history(period="1d")['Close'].iloc[-1]
+
+            live_tqqq = float(live_tqqq)
+            live_qqq = float(live_qqq)
+            live_date = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
+            last_date = pd.to_datetime(df['Date'].iloc[-1].strftime('%Y-%m-%d'))
+
+            if live_date == last_date:
+                df.loc[df.index[-1], 'TQQQ'] = live_tqqq
+                df.loc[df.index[-1], 'QQQ'] = live_qqq
+            elif live_date > last_date:
+                new_row = pd.DataFrame({'Date': [live_date], 'TQQQ': [live_tqqq], 'QQQ': [live_qqq]})
+                df = pd.concat([df, new_row], ignore_index=True)
+                
+            print(f"🎯 실시간 가격 포착 성공: TQQQ ${live_tqqq:.2f}")
+        except Exception as e:
+            print(f"⚠️ 실시간가 호출 실패, 기존 데이터 사용: {e}")
+
+        cur_p = round(float(df['TQQQ'].iloc[-1]), 2)
 
         # 전체 데이터 다운로드 (성장성 계산용)
         data = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)['Close'].dropna()
