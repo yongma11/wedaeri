@@ -1,10 +1,11 @@
-name: Wedaeri Autobot Scheduler
+name: Wedaeri Autobot Triggered by Cron-job
 
 on:
-  schedule:
-    # UTC 기준 금요일 19:45분 (한국 시간 토요일 04:45분)
-    - cron: '45 19 * * 5'
-  workflow_dispatch: # 수동 실행 버튼 활성화
+  # 외부 API 호출을 통해 실행되도록 설정
+  repository_dispatch:
+    types: [external_trigger]
+  # 필요한 경우 수동 실행도 가능하게 유지
+  workflow_dispatch:
 
 jobs:
   build:
@@ -25,5 +26,4 @@ jobs:
       - name: Run Autobot
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        # 여기서 파일 이름을 수정합니다!
         run: python Wedaeri_Autobot.py
