@@ -72,27 +72,32 @@ def send_telegram(text):
 def main():
     print("🚀 위대리 오토봇 가동 (GitHub Actions)")
     
-    # [환경변수 로드 및 인증 오류 해결 로직]
+    # 1. 환경 변수 로드
     creds_raw = os.environ.get('GCP_CREDENTIALS')
     if not creds_raw:
         print("❌ 에러: GCP_CREDENTIALS 설정이 필요합니다.")
         return
 
     try:
-        # 1) 문자열/딕셔너리 타입 체크 및 변환
-        if isinstance(creds_raw, str):
-            creds_json = json.loads(creds_raw.strip())
-        else:
-            creds_json = creds_raw
+        # 데이터 타입 체크 및 변환
+        creds_json = json.loads(creds_raw.strip()) if isinstance(creds_raw, str) else creds_raw
         
-        # 2) [핵심] 깨진 private_key 줄바꿈(\n) 복구
+        # [무조건 성공하는 치트키] 
+        # 구글 인증 키의 핵심은 첫 줄과 끝 줄, 그리고 그 사이의 줄바꿈입니다.
         if 'private_key' in creds_json:
-            creds_json['private_key'] = creds_json['private_key'].replace('\\n', '\n')
+            pk = creds_json['private_key']
+            # 기존에 섞여있을 수 있는 잘못된 줄바꿈 기호들을 모두 정리하고 
+            # 구글 표준인 \n (개행문자)로 통일합니다.
+            pk = pk.replace('\\n', '\n').replace('\n', '\\n').replace('\\n', '\n')
+            creds_json['private_key'] = pk
 
-        # 3) 구글 서비스 계정 인증
+        # 서비스 계정 인증
         gc = gspread.service_account_from_dict(creds_json)
+        
+        # 시트 열기
         sh = gc.open_by_key(SHEET_KEY)
         ws = sh.worksheet("위대리")
+        
         print("✅ 구글 시트 연결 성공!")
 
         # 데이터 계산 시작
