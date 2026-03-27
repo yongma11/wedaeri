@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore', message='Polyfit may be poorly conditioned')
 SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
 START_DATE = '2026-02-02'  # 매매 시작일
 INITIAL_CAP = 100000       # 시작 원금 ($)
-INITIAL_RATIO = 0.59       # 초기 진입 비중 (59%)
+INITIAL_RATIO = 0.58       # 초기 진입 비중 (58%)
 
 def calculate_longterm_growth(series, dates, window=1260):
     results = [np.nan] * len(series)
