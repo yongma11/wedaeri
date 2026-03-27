@@ -5,6 +5,8 @@ import gspread
 import os
 import json
 import requests
+import warnings
+warnings.simplefilter('ignore', np.RankWarning)
 from datetime import datetime
 
 # ==========================================
