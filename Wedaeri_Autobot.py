@@ -6,7 +6,8 @@ import os
 import json
 import requests
 import warnings
-warnings.simplefilter('ignore', np.RankWarning)
+# 특정 경고 클래스 대신, 메시지 패턴으로 경고를 무시하도록 변경합니다.
+warnings.filterwarnings('ignore', message='Polyfit may be poorly conditioned')
 from datetime import datetime
 
 # ==========================================
