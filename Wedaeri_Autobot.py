@@ -40,22 +40,31 @@ def main():
         return
 
     try:
-        # [핵심 수정] 양 끝 공백을 제거하고 JSON으로 변환합니다.
-        creds_json = json.loads(creds_raw.strip())
+        # [핵심 수정] 데이터 타입에 따라 유연하게 처리
+        if isinstance(creds_raw, str):
+            # 문자열로 들어오면 JSON으로 변환
+            creds_json = json.loads(creds_raw.strip())
+        else:
+            # 이미 딕셔너리 형태라면 그대로 사용
+            creds_json = creds_raw
         
-        # 서비스 계정 인증
+        # 서비스 계정 인증 (가장 표준적인 방식)
         gc = gspread.service_account_from_dict(creds_json)
+        
+        # 시트 열기
         sh = gc.open_by_key(SHEET_KEY)
         ws = sh.worksheet("위대리")
         
-        # ... (이후 데이터 수집 및 매매 로직 동일) ...
         print("✅ 구글 시트 연결 성공!")
         
+        # --------------------------------------------------
+        # 이후 데이터 수집 및 매매 로직 실행...
+        # --------------------------------------------------
+        
     except json.JSONDecodeError as e:
-        print(f"❌ JSON 형식 오류 (Secrets 확인 필요): {e}")
+        print(f"❌ JSON 형식 오류: {e}")
     except Exception as e:
-        # 여기서 JWT Signature 에러가 발생하면 아래 '최후의 수단'을 참고하세요.
-        print(f"❌ 오류 발생: {e}")
+        print(f"❌ 인증/연결 오류 발생: {e}")
 
     # 2. 데이터 수집 및 실시간가 반영
     df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)['Close'].dropna()
