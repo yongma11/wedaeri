@@ -1,0 +1,29 @@
+name: Wedaeri Autobot Scheduler
+
+on:
+  schedule:
+    # UTC 기준 금요일 19:45분 (한국 시간 토요일 04:45분)
+    - cron: '45 19 * * 5'
+  workflow_dispatch: # 수동 실행 버튼 활성화
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas numpy yfinance gspread google-auth requests
+
+      - name: Run Autobot
+        env:
+          # GitHub Secrets에 저장한 JSON 키를 환경 변수로 불러옴
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: python app.py
