@@ -60,19 +60,32 @@ def main():
         ws = sh.worksheet("위대리")
         print("✅ 구글 시트 연결 성공!")
 
-        # 2. 데이터 수집 (현재가 반영 강화)
+       # 2. 데이터 수집 (3중 체크 방식으로 현재가 반영 강화)
+        print("🔍 실시간 가격 데이터를 수집 중입니다...")
+        
+        # 방식 A: Ticker 객체의 history 사용 (가장 표준)
+        tqqq_obj = yf.Ticker("TQQQ")
+        live_data = tqqq_obj.history(period='1d', interval='1m')
+        
+        if not live_data.empty:
+            live_tqqq = live_data['Close'].iloc[-1]
+        else:
+            # 방식 B: history가 실패할 경우 fast_info 시도
+            try:
+                live_tqqq = tqqq_obj.fast_info['last_price']
+            except:
+                # 방식 C: 최악의 경우 최근 5일치 download 데이터의 마지막 값
+                temp_df = yf.download("TQQQ", period="5d", progress=False)
+                live_tqqq = temp_df['Close'].iloc[-1]
+
+        cur_p = round(float(live_tqqq), 2)
+        print(f"📊 확정된 TQQQ 현재가: ${cur_p}")
+
+        # 전체 데이터 다운로드 (성장성 계산용)
         data = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)['Close'].dropna()
         
-        # 더 확실한 실시간 가격 가져오기
-        live_tqqq = yf.Ticker("TQQQ").history(period='1d')['Close'].iloc[-1]
-        live_qqq = yf.Ticker("QQQ").history(period='1d')['Close'].iloc[-1]
-        
-        # 마지막 행을 현재가로 업데이트
-        data.iloc[-1, data.columns.get_loc('TQQQ')] = live_tqqq
-        data.iloc[-1, data.columns.get_loc('QQQ')] = live_qqq
-        
-        cur_p = round(live_tqqq, 2)
-        print(f"📊 현재 TQQQ 가격: ${cur_p}")
+        # 마지막 행의 TQQQ 가격을 위에서 구한 실시간가로 강제 교체
+        data.loc[data.index[-1], 'TQQQ'] = live_tqqq
 
         # 3. 위대리 엔진 계산
         df_res = data.reset_index()
