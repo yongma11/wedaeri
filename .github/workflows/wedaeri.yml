@@ -22,8 +22,8 @@ jobs:
         run: |
           pip install pandas numpy yfinance gspread google-auth requests
 
-      - name: Run Autobot
+     - name: Run Autobot
         env:
-          # GitHub Secrets에 저장한 JSON 키를 환경 변수로 불러옴
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        run: python app.py
+        # 여기서 파일 이름을 수정합니다!
+        run: python Wedaeri_Autobot.py
