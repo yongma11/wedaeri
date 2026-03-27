@@ -6,7 +6,7 @@ import os
 import json
 import requests
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta  # timedelta를 추가해야 합니다!
 
 # 경고 무시
 warnings.filterwarnings('ignore', message='Polyfit may be poorly conditioned')
