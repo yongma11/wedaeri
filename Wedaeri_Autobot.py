@@ -6,18 +6,20 @@ import os
 import json
 import requests
 import warnings
-# 특정 경고 클래스 대신, 메시지 패턴으로 경고를 무시하도록 변경합니다.
-warnings.filterwarnings('ignore', message='Polyfit may be poorly conditioned')
 from datetime import datetime
 
+# Polyfit 연산 시 발생하는 불필요한 경고 무시
+warnings.filterwarnings('ignore', message='Polyfit may be poorly conditioned')
+
 # ==========================================
-# [설정] GitHub Secrets와 연동되는 구간
+# [설정] 용성님, 시트 정보와 원금을 확인하세요!
 # ==========================================
 SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
-START_DATE = '2026-02-02'  # 실제 매매 시작일
-INITIAL_CAP = 100000       # 투자 원금
+START_DATE = '2025-01-01'  # 실제 매매 시작일
+INITIAL_CAP = 100000       # 투자 원금 ($)
 # ==========================================
 
+# 1. 위대리 장기 추세선 엔진 (25년 로그 회귀)
 def calculate_longterm_growth(series, dates, window=1260):
     results = [np.nan] * len(series)
     date_nums = dates.map(pd.Timestamp.toordinal).values
@@ -30,87 +32,148 @@ def calculate_longterm_growth(series, dates, window=1260):
         except: pass
     return pd.Series(results, index=series.index)
 
+# 2. 시장 데이터 수집 및 실시간가(예상종가) 반영
+def get_market_data():
+    try:
+        df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)['Close'].dropna()
+        
+        # 장마감 15분 전 실시간 가격 가져오기
+        tqqq_ticker = yf.Ticker("TQQQ")
+        qqq_ticker = yf.Ticker("QQQ")
+        live_tqqq = tqqq_ticker.fast_info['last_price']
+        live_qqq = qqq_ticker.fast_info['last_price']
+        
+        # 마지막 행 가격 업데이트
+        df.iloc[-1, df.columns.get_loc('TQQQ')] = live_tqqq
+        df.iloc[-1, df.columns.get_loc('QQQ')] = live_qqq
+
+        df_reset = df.reset_index()
+        df_reset['Growth'] = calculate_longterm_growth(df_reset['QQQ'], df_reset['Date'])
+        df_reset['Eval'] = (df_reset['QQQ'] / df_reset['Growth']) - 1
+        
+        # 주간(금요일) 데이터 추출
+        weekly_df = df_reset[df_reset['Date'].dt.weekday == 4].copy()
+        weekly_df['TQQQ_Prev'] = weekly_df['TQQQ'].shift(1)
+        
+        return weekly_df.dropna(subset=['Growth', 'TQQQ_Prev']).reset_index(drop=True)
+    except Exception as e:
+        print(f"❌ 데이터 로딩 실패: {e}")
+        return None
+
+# 3. 텔레그램 알림 함수
+def send_telegram(text):
+    bot_token = "7524501477:AAEJu3xmHi2Mjxb86ARc6KtMfBh9H9pRZIM"
+    chat_id = "1442265681"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try: requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+    except: pass
+
+# 4. 메인 실행 루틴
 def main():
     print("🚀 위대리 오토봇 가동 (GitHub Actions)")
     
-    # 1. 환경 변수에서 구글 인증 정보 가져오기
+    # [환경변수 로드 및 인증 오류 해결 로직]
     creds_raw = os.environ.get('GCP_CREDENTIALS')
     if not creds_raw:
         print("❌ 에러: GCP_CREDENTIALS 설정이 필요합니다.")
         return
 
     try:
-        # [핵심 수정] 데이터 타입에 따라 유연하게 처리
+        # 1) 문자열/딕셔너리 타입 체크 및 변환
         if isinstance(creds_raw, str):
-            # 문자열로 들어오면 JSON으로 변환
             creds_json = json.loads(creds_raw.strip())
         else:
-            # 이미 딕셔너리 형태라면 그대로 사용
             creds_json = creds_raw
         
-        # 서비스 계정 인증 (가장 표준적인 방식)
+        # 2) [핵심] 깨진 private_key 줄바꿈(\n) 복구
+        if 'private_key' in creds_json:
+            creds_json['private_key'] = creds_json['private_key'].replace('\\n', '\n')
+
+        # 3) 구글 서비스 계정 인증
         gc = gspread.service_account_from_dict(creds_json)
-        
-        # 시트 열기
         sh = gc.open_by_key(SHEET_KEY)
         ws = sh.worksheet("위대리")
-        
         print("✅ 구글 시트 연결 성공!")
+
+        # 데이터 계산 시작
+        df_market = get_market_data()
+        if df_market is None: return
+
+        # 위대리 v2.5 설정값
+        settings = {
+            'max_cash_pct': 100, 'initial_entry_pct': 50,
+            'uhigh_cut': 0.10, 'high_cut': 0.05, 'low_cut': -0.06, 'ulow_cut': -0.10,
+            'sell_ratios': {'UHIGH': 1.5, 'HIGH': 1.0, 'MID': 0.6, 'LOW': 0.6, 'ULOW': 0.3},
+            'buy_ratios': {'UHIGH': 0.3, 'HIGH': 0.6, 'MID': 0.6, 'LOW': 1.2, 'ULOW': 2.0}
+        }
         
-        # --------------------------------------------------
-        # 이후 데이터 수집 및 매매 로직 실행...
-        # --------------------------------------------------
+        # 잔고 시뮬레이션 로직
+        sim_data = df_market[df_market['Date'] >= pd.to_datetime(START_DATE)].iloc[:-1]
+        cash, shares = INITIAL_CAP, 0
+        is_first = True
+        max_c = INITIAL_CAP * (settings['max_cash_pct'])
+
+        for _, row in sim_data.iterrows():
+            p, prev_p, m_eval = row['TQQQ'], row['TQQQ_Prev'], row['Eval']
+            tier = 'MID'
+            if m_eval > settings['uhigh_cut']: tier = 'UHIGH'
+            elif m_eval > settings['high_cut']: tier = 'HIGH'
+            elif m_eval < settings['ulow_cut']: tier = 'ULOW'
+            elif m_eval < settings['low_cut']: tier = 'LOW'
+
+            if is_first:
+                q = round(min(INITIAL_CAP * (settings['initial_entry_pct']), max_c) / p)
+                shares = q; cash -= (q * p); is_first = False
+            else:
+                diff = (shares * p) - (shares * prev_p)
+                if diff > 0:
+                    q = int(min(round((diff * settings['sell_ratios'][tier]) / p), shares))
+                    shares -= q; cash += (q * p)
+                elif diff < 0:
+                    avail = max_c - (INITIAL_CAP - cash)
+                    if avail > 0:
+                        q = round(min(cash, abs(diff) * settings['buy_ratios'][tier], avail) / p)
+                        if (q * p) > cash: q = int(cash // p)
+                        shares += q; cash -= (q * p)
+
+        # 오늘의 최종 주문 계산
+        last = df_market.iloc[-1]
+        cur_p, m_eval = round(last['TQQQ'], 2), last['Eval']
+        tier = 'MID'
+        if m_eval > settings['uhigh_cut']: tier = 'UHIGH'
+        elif m_eval > settings['high_cut']: tier = 'HIGH'
+        elif m_eval < settings['ulow_cut']: tier = 'ULOW'
+        elif m_eval < settings['low_cut']: tier = 'LOW'
+
+        diff = (shares * cur_p) - (shares * last['TQQQ_Prev'])
+        action, qty = "관망", 0
         
-    except json.JSONDecodeError as e:
-        print(f"❌ JSON 형식 오류: {e}")
+        if diff > 0:
+            action = "매도"
+            qty = int(min(round((diff * settings['sell_ratios'][tier]) / cur_p), shares))
+        elif diff < 0:
+            action = "매수"
+            avail = max_c - (INITIAL_CAP - cash)
+            qty = round(min(cash, abs(diff) * settings['buy_ratios'][tier], avail) / cur_p)
+            if (qty * cur_p) > cash: qty = int(cash // cur_p)
+
+        # 구글 시트 업데이트 (L4:O4)
+        ws.update('L4:O4', [[action, "LOC", cur_p, qty if qty > 0 else 0]])
+        print(f"📤 시트 업데이트 완료: {action} {qty}주 @ {cur_p}")
+
+        # 텔레그램 전송
+        total_asset = cash + (shares * cur_p)
+        msg = f"🚀 *[위대리] 주간 매매 시그널*\n\n" \
+              f"📊 시장모드: `{tier}`\n" \
+              f"💰 총 자산: `${total_asset:,.0f}`\n\n" \
+              f"🎯 *주문 요약 (LOC)*\n" \
+              f"- 종류: *{action}*\n" \
+              f"- 가격: `${cur_p}`\n" \
+              f"- 수량: *{qty}* 주"
+        send_telegram(msg)
+
     except Exception as e:
         print(f"❌ 인증/연결 오류 발생: {e}")
-
-    # 2. 데이터 수집 및 실시간가 반영
-    df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)['Close'].dropna()
-    live_tqqq = yf.Ticker("TQQQ").fast_info['last_price']
-    live_qqq = yf.Ticker("QQQ").fast_info['last_price']
-    df.iloc[-1, df.columns.get_loc('TQQQ')] = live_tqqq
-    df.iloc[-1, df.columns.get_loc('QQQ')] = live_qqq
-
-    df_reset = df.reset_index()
-    df_reset['Growth'] = calculate_longterm_growth(df_reset['QQQ'], df_reset['Date'])
-    df_reset['Eval'] = (df_reset['QQQ'] / df_reset['Growth']) - 1
-    
-    weekly_df = df_reset[df_reset['Date'].dt.weekday == 4].copy()
-    weekly_df['TQQQ_Prev'] = weekly_df['TQQQ'].shift(1)
-    df_final = weekly_df.dropna(subset=['Growth', 'TQQQ_Prev']).reset_index(drop=True)
-
-    # 3. 위대리 v2.5 설정 및 현재 상태 복원
-    settings = {
-        'max_cash_pct': 100, 'initial_entry_pct': 50,
-        'uhigh_cut': 10, 'high_cut': 5, 'low_cut': -6, 'ulow_cut': -10,
-        'sell_ratios': {'UHIGH': 150, 'HIGH': 100, 'MID': 60, 'LOW': 60, 'ULOW': 30},
-        'buy_ratios': {'UHIGH': 30, 'HIGH': 60, 'MID': 60, 'LOW': 120, 'ULOW': 200}
-    }
-    
-    # (상태 복원 로직)
-    sim_data = df_final[df_final['Date'] >= pd.to_datetime(START_DATE)].iloc[:-1]
-    cash, shares = INITIAL_CAP, 0
-    is_first = True
-    for _, row in sim_data.iterrows():
-        # ... (중략: 기존 위대리 시뮬레이션 로직 동일) ...
-        # [편의상 생략하지만 실제 코드에는 이전 답변의 시뮬레이션 로직을 넣어야 합니다]
-        pass
-
-    # 4. 오늘의 주문 계산 및 전송
-    last = df_final.iloc[-1]
-    # (주문 계산 로직 수행 후...)
-    
-    try:
-        credentials = json.loads(creds_json)
-        gc = gspread.service_account_from_dict(credentials)
-        sh = gc.open_by_key(SHEET_KEY)
-        ws = sh.worksheet("위대리")
-        # ws.update(...) 주문 전송
-        print("✅ 구글 시트 업데이트 완료")
-    except Exception as e:
-        print(f"❌ 오류 발생: {e}")
 
 if __name__ == "__main__":
     main()
