@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore', message='Polyfit may be poorly conditioned')
 
 # [설정 정보]
 SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
-START_DATE = '2025-01-01'
+START_DATE = '2026-02-02'
 INITIAL_CAP = 100000
 
 def calculate_longterm_growth(series, dates, window=1260):
