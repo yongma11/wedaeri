@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "wedaeri-autobot",
+  "private_key_id": "64a230d846026e34b96fe279be4bd88d59e2d120",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDeyP+B1tGYDu9Y\n5dshyTYE0duPeRpMgjwjId0rMa5OAFnRaI+NkKAyLCrn+aS4R9UA5XtJvxb0vUoK\nz0bWVF+8zW8A4+vKrrBOBiex1ojp2MEAWUjGN6BiiWu4J0aacqSHbCUTVRinNsfH\nAaYe1X1nr7Xwnh6BA7byG1jQ7HNf3dUyMsPl+lDI7AARhRZjTJKcVECD3wdfJeEE\n+SS/laSf/c5awWHRSJOUJf5ioCJK2d/vK4AS7YLY5fheQZSc9PNed5hRMq4EjNQy\nLO0uOUyDTxurjdMz1ET37M7OzboGHwoXaD6/GHD04U9tg4v3tVReUryG+3r76bnz\nh8k5RKHHAgMBAAECggEADj9TcRsVr1Wb1+xnOFYVAXeRmi93+kGalUftTChdXyP6\n79Scgu9SAgi8u7Ya4yVw3qGjt00kVjAkI+R/7BAG9AeSnD93N7CL74l0O2rJZGRr\nagQhDnrF49dUT2QaSfaf8AB/WdOng8tnOPexhyecYVJQM9xLfhuzNPDWcWdVtOEt\nLd2O/nWVOXMgYcYgRp/9VqphVg637NeNmkldg8yTgOKy2lDJ/wu5WBWJ2+u0BH0J\nugIRDkmSj5MYOtMZU98bDYgmlKiRcAxTBCbK4r802XA4LCJH8t7TO+8oLz4I1pCN\nggghXaUn4Rt5I8544v3P1Odnq1dK4Baz2yv76SJTbQKBgQD3YRavOC/bBA/s6z5Y\nFSJfh1+PheE39F5Mv3GS1S+F/fVnGm5Y2MwE3Ix83c83uonxx9rn+hZ3OC5Mkv7I\nw1qNDWoHh1vWYIyBLraZmY4qX4V0RfeMqJ7bdUD6MDp8rYiPKrPZ8Fwacwn0joZ2\nZyj9EQo9j5pCRzWKb6IjO0b0YwKBgQDmjIBag3eiJGjOH8K0M5QV3ZU2M/5m189r\n2Ir+Ec+T3qngV9ooSOA3tYUWice6NN7tgmi/aVY0Y+mDynzNuZc1LclnFPWm2azi\nR7Yc69CmxzcqQuVcKtY95zokQ8uvAFKNyIQYY4b+E5wHxhn76bQ1Ax3YzR05riSg\n7f57oBhgTQKBgQCVI+SAONipKzbKuDy67+rsOvpC1g0lJd+gV58KThq7ppNH2KiE\nShgeKjVMppFiYMT/jmUMjDr1H1rScaDHuvchqN+usE2O3mB3FYmi6u/J3hLgObp4\nA8TaPEOzUlZAioKVBcKudvmgPJDY7wBj6+fLQnWxDZ2LrdC6qHjQ0tEBTwKBgQDi\n2RqudS9wzkyFjQDC2QF75lScSdqnjO/eWOqihhnukKgsQ6U4AEUG68fxXk607LLx\nlmDE/rvAvxKVB9d3gYbD37KNiDUSIJsY56DMokfi4qBoJ/yQjOHTdUJjToYLQtD4\nC3XWnY/FTrw3dfg5REJ56wAiQ+jeyXfnFWZSdDun/QKBgA/seYw/7gER5AtU3mWH\nOZi2c/XdF5DL31aYRjIhmIFOQB9nWh9CnCO/89EQ05NfUFCDVRtJLq7tIbPjkwx9\npK1XnFI47Ll/V+9dIl98DAGzRwBQO1j4EZDkSpmL1o9trheLbl5MNZuAjc7kO1nB\n/rP/HDlFW+WG5B88Cj+1YvdD\n-----END PRIVATE KEY-----\n",
+  "client_email": "wedaeri-bot@wedaeri-autobot.iam.gserviceaccount.com",
+  "client_id": "112006493318556494936",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/wedaeri-bot%40wedaeri-autobot.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
