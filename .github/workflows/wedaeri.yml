@@ -1,29 +1,22 @@
-name: Wedaeri Autobot Triggered by Cron-job
+name: Wedaeri Autobot Trigger
 
 on:
-  # 외부 API 호출을 통해 실행되도록 설정
   repository_dispatch:
     types: [external_trigger]
-  # 필요한 경우 수동 실행도 가능하게 유지
   workflow_dispatch:
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install pandas numpy yfinance gspread google-auth requests
-
-      - name: Run Autobot
+      - name: Install Packages
+        run: pip install pandas numpy yfinance gspread google-auth requests
+      - name: Run Bot
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python Wedaeri_Autobot.py
