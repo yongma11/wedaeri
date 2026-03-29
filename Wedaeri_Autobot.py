@@ -13,9 +13,9 @@ warnings.filterwarnings('ignore', message='Polyfit may be poorly conditioned')
 
 # [사용자 개인 설정]
 SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
-START_DATE = '2025-12-26'  # 매매 시작일 정정
-INITIAL_CAP = 108000       # 시작 원금 ($108,000)
-INITIAL_CASH_RATIO = 0.40  # 초기 현금 비중 (40%)
+START_DATE = '2026-02-02'  # 매매 시작일
+INITIAL_CAP = 100000       # 시작 원금 ($)
+INITIAL_RATIO = 0.59       # 초기 진입 비중 (59%)
 
 def calculate_longterm_growth(series, dates, window=1260):
     results = [np.nan] * len(series)
@@ -38,7 +38,7 @@ def send_telegram(text):
     except: pass
 
 def main():
-    print("🚀 [위대리 v3.0] 3단계 로직 적용 오토봇 가동...")
+    print("🚀 [위대리 v2.9] 오토봇 가동 시작...")
     
     creds_raw = os.environ.get('GCP_CREDENTIALS')
     if not creds_raw: return
@@ -78,86 +78,95 @@ def main():
         weekly = df[df['Date'].dt.weekday == 4].copy()
         sim_data = weekly[weekly['Date'] >= pd.to_datetime(START_DATE)].copy().reset_index(drop=True)
 
-        # --- D. 정정된 3단계 잔고 시뮬레이션 ---
-        # 매매 설정 (정정된 파라미터)
+        # --- D. 잔고 및 수량 시뮬레이션 (과거 복기) ---
         settings = {
-            'high_cut': 0.055, 'low_cut': -0.07,
-            'sell_ratios': {'HIGH': 1.5, 'MID': 0.6, 'LOW': 0.33},
-            'buy_ratios': {'HIGH': 0.5, 'MID': 0.6, 'LOW': 2.0}
+            'uhigh_cut': 0.10, 'high_cut': 0.05, 'low_cut': -0.06, 'ulow_cut': -0.10,
+            'sell_ratios': {'UHIGH': 1.5, 'HIGH': 1.0, 'MID': 0.6, 'LOW': 0.6, 'ULOW': 0.3},
+            'buy_ratios': {'UHIGH': 0.3, 'HIGH': 0.6, 'MID': 0.6, 'LOW': 1.2, 'ULOW': 2.0}
         }
+        max_c = INITIAL_CAP
 
-        # 초기 진입 (25년 12월 26일 기준)
+        # 초기 진입
         first_row = sim_data.iloc[0]
-        cash = INITIAL_CAP * INITIAL_CASH_RATIO
-        shares = int((INITIAL_CAP * (1 - INITIAL_CASH_RATIO)) / first_row['TQQQ'])
+        shares = int((INITIAL_CAP * INITIAL_RATIO) / first_row['TQQQ'])
+        cash = INITIAL_CAP - (shares * first_row['TQQQ'])
         avg_price = first_row['TQQQ']
         
-        # 매매 복기
+        # 마지막 주 직전까지의 매매 복기
         for i in range(1, len(sim_data)-1):
             p = sim_data.loc[i, 'TQQQ']
             prev_p = sim_data.loc[i-1, 'TQQQ']
             m_eval = sim_data.loc[i, 'Eval']
-
-            # 3단계 티어 판정
             tier = 'MID'
-            if m_eval >= settings['high_cut']: tier = 'HIGH'
-            elif m_eval <= settings['low_cut']: tier = 'LOW'
+            if m_eval > settings['uhigh_cut']: tier = 'UHIGH'
+            elif m_eval > settings['high_cut']: tier = 'HIGH'
+            elif m_eval < settings['ulow_cut']: tier = 'ULOW'
+            elif m_eval < settings['low_cut']: tier = 'LOW'
 
             price_diff = (shares * p) - (shares * prev_p)
-            if price_diff > 0 and shares > 0: # 매도
+            if price_diff > 0 and shares > 0:
                 q_sell = int(min(round((price_diff * settings['sell_ratios'][tier]) / p), shares))
                 shares -= q_sell
                 cash += (q_sell * p)
-            elif price_diff < 0: # 매수
-                avail = INITIAL_CAP - (INITIAL_CAP - cash) # 가용 범위
-                q_buy = int(min(cash, abs(price_diff) * settings['buy_ratios'][tier]) / p)
-                shares += q_buy
-                cash -= (q_buy * p)
+            elif price_diff < 0:
+                avail = max_c - (INITIAL_CAP - cash)
+                if avail > 0:
+                    q_buy = int(min(cash, abs(price_diff) * settings['buy_ratios'][tier], avail) / p)
+                    shares += q_buy
+                    cash -= (q_buy * p)
 
-        # --- E. 이번 주 주문량 계산 ---
+        # --- E. 이번 주(최신 데이터) 주문량 계산 ---
         last_row = sim_data.iloc[-1]
         prev_row = sim_data.iloc[-2]
         last_eval = last_row['Eval']
         
+        cur_price_diff = (shares * last_row['TQQQ']) - (shares * prev_row['TQQQ'])
+        
+        # 이번 주 티어 판정
         this_tier = 'MID'
-        if last_eval >= settings['high_cut']: this_tier = 'HIGH'
-        elif last_eval <= settings['low_cut']: this_tier = 'LOW'
+        if last_eval > settings['uhigh_cut']: this_tier = 'UHIGH'
+        elif last_eval > settings['high_cut']: this_tier = 'HIGH'
+        elif last_eval < settings['ulow_cut']: this_tier = 'ULOW'
+        elif last_eval < settings['low_cut']: this_tier = 'LOW'
 
-        cur_diff = (shares * last_row['TQQQ']) - (shares * prev_row['TQQQ'])
         action, order_qty = "관망", 0
         
-        if cur_diff > 0:
+        if cur_price_diff > 0: # 상승 시 매도 주문
             action = "매도"
-            order_qty = int(min(round((cur_diff * settings['sell_ratios'][this_tier]) / last_row['TQQQ']), shares))
-        elif cur_diff < 0:
+            order_qty = int(min(round((cur_price_diff * settings['sell_ratios'][this_tier]) / last_row['TQQQ']), shares))
+        elif cur_price_diff < 0: # 하락 시 매수 주문
             action = "매수"
-            order_qty = int(min(cash, abs(cur_diff) * settings['buy_ratios'][this_tier]) / last_row['TQQQ'])
+            avail_now = max_c - (INITIAL_CAP - cash)
+            order_qty = int(min(cash, abs(cur_price_diff) * settings['buy_ratios'][this_tier], avail_now) / last_row['TQQQ'])
 
         if order_qty == 0: action = "관망"
 
-        # --- F. 업데이트 및 전송 ---
+        # --- F. 구글 시트 및 텔레그램 업데이트 ---
         ws.update_acell('L4', action)
         ws.update_acell('M4', 'LOC' if action != "관망" else "-")
         ws.update_acell('N4', cur_p)
-        ws.update_acell('O4', order_qty)
+        ws.update_acell('O4', order_qty) # 현재 보유량이 아닌 '주문량' 기재
+        print(f"📤 업데이트 완료: {action} {order_qty}주 (LOC)")
 
         total_asset = cash + (shares * cur_p)
         today_str = datetime.now().strftime('%Y-%m-%d %H:%M')
         
-        msg = f"🚀 *[위대리 v3.0] 3단계 매매 리포트*\n\n" \
+        msg = f"🚀 *[위대리] 주간 매매 시그널* ({today_str})\n\n" \
               f"💰 *자산 현황*\n" \
-              f"- 총 자산: `${total_asset:,.2f}`\n" \
+              f"- 예상 총 자산: `${total_asset:,.2f}`\n" \
               f"- 보유 주식: *{shares}* 주\n" \
               f"- 보유 현금: `${cash:,.2f}`\n\n" \
-              f"🌡️ *시장 평가*: `{last_eval:.2%}` ({this_tier})\n" \
-              f"🎯 *이번 주 주문*: *{action} {order_qty}주 (LOC)*\n\n" \
-              f"📅 시작일: `2025-12-26` (원금 $108,000)"
+              f"🌡️ *시장 평가*: `{last_eval:.2%}` ({this_tier})\n\n" \
+              f"🎯 *이번 주 주문 (LOC)*\n" \
+              f"- 상태: *{action}*\n" \
+              f"- 주문 수량: *{order_qty}* 주\n" \
+              f"- 현재가 기준: `${cur_p}`\n\n" \
+              f"💡 MTS에서 `{action} {order_qty}주`를 LOC로 예약하세요!"
         
         send_telegram(msg)
-        print(f"✅ 완료: {action} {order_qty}주")
 
     except Exception as e:
-        print(f"❌ 오류: {e}")
+        print(f"❌ 오류 발생: {e}")
 
 if __name__ == "__main__":
     main()
