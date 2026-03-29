@@ -1,5 +1,7 @@
-streamlit
-yfinance
 pandas
 numpy
-matplotlib
+yfinance
+gspread
+google-auth
+requests
+streamlit
