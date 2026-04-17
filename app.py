@@ -852,17 +852,7 @@ with tab2:
     st.markdown("### 📅 연도별 상세 성과")
     if bt_cur.get('yearly'):
         yr_df = pd.DataFrame(bt_cur['yearly'])
-        # 수익률에 따라 행 색상 (양수=초록, 음수=빨강)
-        def color_ret(val):
-            try:
-                v = float(val.replace('%', '').replace('+', ''))
-                color = '#22c55e' if v >= 0 else '#f87171'
-            except Exception:
-                color = ''
-            return f'color: {color}; font-weight: bold'
-
-        styled = yr_df.style.applymap(color_ret, subset=['수익률'])
-        st.dataframe(styled, use_container_width=True, hide_index=True)
+        st.dataframe(yr_df, use_container_width=True, hide_index=True)
 
         # 연도별 수익률 막대 차트
         yr_vals = [float(r['수익률'].replace('%', '').replace('+', '')) for r in bt_cur['yearly']]
