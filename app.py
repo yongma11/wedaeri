@@ -8,7 +8,83 @@
   Fix ④ tz-aware vs tz-naive 날짜 비교 오류 → tz_localize(None) 통일
   Fix ⑤ polyfit 루프 try/except 누락 → 추가
   Fix ⑥ Eval NaN 시 티어 오판 → pd.isna() 명시 체크
-  Fix ⑦ 매도 수량 round() 혼용 → int() 단일화
+  Fix ⑦ 매도 수량 round() 혼용 → int() 단일화import streamlit as st
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import gspread
+from google.oauth2.service_account import Credentials
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+
+# 1. 페이지 설정
+st.set_page_config(page_title="위대리 Quantum T-Flow v3.0", layout="wide")
+
+# [사용자 설정]
+SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
+START_DATE = '2025-12-26'
+INITIAL_CAP = 108000
+INITIAL_CASH_RATIO = 0.40
+
+# 2. 데이터 엔진 (에러 방어 로직 강화)
+@st.cache_data(ttl=3600)
+def load_market_data():
+    try:
+        # 데이터 다운로드
+        df_raw = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)
+        
+        # 데이터가 비어있는지 확인
+        if df_raw.empty:
+            return pd.DataFrame()
+
+        # Multi-Index 대응
+        df_close = df_raw['Close'] if isinstance(df_raw.columns, pd.MultiIndex) else df_raw[['Close']]
+        df = df_close.dropna().reset_index()
+        
+        if 'Date' not in df.columns:
+            df.rename(columns={'index': 'Date'}, inplace=True)
+        
+        # 데이터가 1260개보다 적으면 성장성 계산 불가
+        if len(df) < 1260:
+            return df
+
+        # 성장성 계산 (5년 로그 회귀)
+        results = [np.nan] * len(df)
+        date_nums = df['Date'].map(pd.Timestamp.toordinal).values
+        values = df['QQQ'].values
+        for i in range(1260, len(df)):
+            fit = np.polyfit(date_nums[i-1260:i], np.log(values[i-1260:i]), 1)
+            results[i] = np.exp(fit[1] + fit[0] * date_nums[i])
+        
+        df['Growth'] = results
+        df['Eval'] = (df['QQQ'] / df['Growth']) - 1
+        return df
+    except Exception as e:
+        st.error(f"데이터 로드 중 오류: {e}")
+        return pd.DataFrame()
+
+# 3. 메인 실행 부분
+df = load_market_data()
+
+# [핵심 수정] 데이터가 있는지 먼저 확인
+if df.empty or 'Date' not in df.columns or len(df) == 0:
+    st.error("⚠️ 야후 파이낸스에서 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해주세요.")
+else:
+    # 실시간 날짜 비교 (에러 발생했던 지점 수정)
+    today_ts = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
+    last_date_ts = pd.to_datetime(df['Date'].iloc[-1]) # 이제 데이터가 있음이 보장됨
+
+    # ... 이후 시뮬레이션 및 차트 로직 실행 ...
+    st.success(f"✅ 데이터 로드 완료 (최신 날짜: {last_date_ts.strftime('%Y-%m-%d')})")
+    
+    # 상단 요약 지표 예시
+    sim_df = df[df['Date'] >= pd.to_datetime(START_DATE)].copy()
+    if not sim_df.empty:
+        st.write(f"📊 시뮬레이션 시작일: {START_DATE}")
+        # (여기에 이전에 작성한 시뮬레이션 및 차트 코드를 이어서 붙여넣으세요)
+        st.line_chart(sim_df.set_index('Date')['TQQQ'])
+    else:
+        st.warning(f"설정한 시작일({START_DATE}) 이후의 데이터가 아직 없습니다.")
   추가: 평단가 실시간 갱신, 실시간 현재가 반영, 보유 현황 표시
 """
 
