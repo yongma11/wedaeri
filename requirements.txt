@@ -1,7 +1,7 @@
+streamlit
 pandas
 numpy
 yfinance
 gspread
 google-auth
-requests
-streamlit
+plotly
