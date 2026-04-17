@@ -372,7 +372,7 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
     # 백테스트 시작일 필터
     if start_date is not None:
         wkly = wkly[wkly['Date'] >= pd.to_datetime(start_date)].reset_index(drop=True)
-    if wkly.empty:
+    if len(wkly) < 2:   # 최소 2주 필요 (첫 주 초기화 + 1주 매매)
         return None
 
     P     = wkly['TQQQ'].values.astype(float)
@@ -410,10 +410,12 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
     dd    = eq / peak - 1
     mdd   = dd.min()
     rets  = np.diff(eq) / eq[:-1]
+    if len(rets) == 0:
+        rets = np.array([0.0])
     neg   = rets[rets < 0]
     dstd  = neg.std() * np.sqrt(52) if len(neg) > 1 else 1e-9
     ann_r = (1 + rets.mean()) ** 52 - 1
-    sor   = ann_r / dstd
+    sor   = ann_r / dstd if dstd > 0 else 0
     cal   = cagr / abs(mdd) if mdd != 0 else 0
 
     bh_peak = np.maximum.accumulate(P)
@@ -798,31 +800,34 @@ with tab2:
     st.markdown("### 📊 주간 수익률 분포")
 
     wr = bt_cur['rets'] * 100
-    pos_pct = (wr > 0).mean() * 100
+    if len(wr) < 2:
+        st.info("⚠️ 주간 데이터가 부족합니다. 백테스트 시작일을 더 앞으로 설정해 주세요.")
+    else:
+        pos_pct = (wr > 0).mean() * 100
 
-    fig_ret = go.Figure()
-    fig_ret.add_trace(go.Histogram(
-        x=wr, nbinsx=60,
-        marker_color=['#4ade80' if r >= 0 else '#f87171' for r in wr],
-        name='주간 수익률'
-    ))
-    fig_ret.add_vline(x=0, line_color='white', line_dash='dash', line_width=1)
-    fig_ret.add_vline(x=float(np.mean(wr)), line_color='#fbbf24', line_dash='dot',
-                       annotation_text=f"평균 {np.mean(wr):.2f}%",
-                       annotation_font=dict(color='#fbbf24', size=10))
-    fig_ret.update_layout(
-        title=f'주간 수익률 분포  |  양전 비율 {pos_pct:.1f}%  |  최대 낙주 {wr.min():.1f}%',
-        xaxis_title='주간 수익률 (%)',
-        height=260, showlegend=False, **CHART_LAYOUT
-    )
-    apply_grid(fig_ret)
-    st.plotly_chart(fig_ret, use_container_width=True)
+        fig_ret = go.Figure()
+        fig_ret.add_trace(go.Histogram(
+            x=wr, nbinsx=60,
+            marker_color=['#4ade80' if r >= 0 else '#f87171' for r in wr],
+            name='주간 수익률'
+        ))
+        fig_ret.add_vline(x=0, line_color='white', line_dash='dash', line_width=1)
+        fig_ret.add_vline(x=float(np.mean(wr)), line_color='#fbbf24', line_dash='dot',
+                           annotation_text=f"평균 {np.mean(wr):.2f}%",
+                           annotation_font=dict(color='#fbbf24', size=10))
+        fig_ret.update_layout(
+            title=f'주간 수익률 분포  |  양전 비율 {pos_pct:.1f}%  |  최대 낙주 {float(wr.min()):.1f}%',
+            xaxis_title='주간 수익률 (%)',
+            height=260, showlegend=False, **CHART_LAYOUT
+        )
+        apply_grid(fig_ret)
+        st.plotly_chart(fig_ret, use_container_width=True)
 
     # ── 티어별 성과 ───────────────────────────────────────────
     st.markdown("### 🎯 티어별 성과 분석")
 
     tiers_arr = np.array(bt_cur['tiers'])
-    wr_full   = np.concatenate([[0], wr])  # 첫 주 0 패딩
+    wr_full   = np.concatenate([[0], wr]) if len(wr) > 0 else np.array([0.0])  # 첫 주 0 패딩
 
     tier_rows = []
     for name, icon in [('HIGH', '🟡'), ('MID', '🔵'), ('LOW', '🟢')]:
