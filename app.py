@@ -76,32 +76,51 @@ def save_config(ss) -> None:
     return cfg   # 호출자가 Sheets 동기화에 재사용
 
 
-def _get_gcp_creds_raw():
-    """Streamlit Secrets 또는 환경변수에서 GCP 인증 JSON 문자열을 반환합니다."""
-    # 1순위: Streamlit Secrets (Streamlit Cloud 배포 환경)
-    try:
-        raw = st.secrets.get("GCP_CREDENTIALS")
-        if raw:
-            return raw if isinstance(raw, str) else json.dumps(dict(raw))
-    except Exception:
-        pass
-    # 2순위: 환경변수 (로컬/서버 실행 환경)
-    return os.environ.get("GCP_CREDENTIALS")
-
-
 @st.cache_resource(show_spinner=False)
 def _get_gspread_client():
-    """gspread 클라이언트를 캐시해서 반환합니다. 실패 시 (None, 에러메시지) 반환."""
+    """gspread 클라이언트를 캐시해서 반환합니다. 실패 시 (None, 에러메시지) 반환.
+
+    인증 탐색 순서:
+    1. st.secrets["gcp_service_account"]  ← TOML 섹션 형식 (현재 사용 중)
+    2. st.secrets["GCP_CREDENTIALS"]      ← JSON 문자열 형식
+    3. 환경변수 GCP_CREDENTIALS           ← 봇/로컬 환경
+    """
     try:
         import gspread
-        raw = _get_gcp_creds_raw()
-        if not raw:
-            return None, "GCP_CREDENTIALS가 Streamlit Secrets에 없습니다"
-        creds = json.loads(raw) if isinstance(raw, str) else raw
+
+        creds = None
+
+        # 1순위: TOML 섹션 형식 [gcp_service_account]
+        try:
+            sec = st.secrets["gcp_service_account"]
+            creds = dict(sec)
+        except Exception:
+            pass
+
+        # 2순위: JSON 문자열 형식 GCP_CREDENTIALS
+        if creds is None:
+            try:
+                raw = st.secrets.get("GCP_CREDENTIALS")
+                if raw:
+                    creds = json.loads(raw) if isinstance(raw, str) else dict(raw)
+            except Exception:
+                pass
+
+        # 3순위: 환경변수
+        if creds is None:
+            raw = os.environ.get("GCP_CREDENTIALS")
+            if raw:
+                creds = json.loads(raw)
+
+        if creds is None:
+            return None, "Streamlit Secrets에 gcp_service_account 또는 GCP_CREDENTIALS가 없습니다"
+
         if 'private_key' in creds:
             creds['private_key'] = creds['private_key'].replace('\\n', '\n')
+
         gc = gspread.service_account_from_dict(creds)
         return gc, None
+
     except Exception as e:
         return None, str(e)
 
