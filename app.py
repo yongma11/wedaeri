@@ -84,46 +84,74 @@ CAGR +9.5%p, MDD 개선
 """)
 
 # ─────────────────────────────────────────────────────────────
-# 3. 데이터 로딩 — O(n) Rolling OLS polyfit
+# 3. 데이터 로딩 — 주간 Expanding Window OLS (스프레드시트 방식)
 # ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_wedaeri_data():
-    """QQQ + TQQQ 로딩 & O(n) rolling OLS로 Growth/Eval 계산"""
+    """QQQ + TQQQ 로딩 & 주간 Expanding OLS로 Growth/Eval 계산
+
+    핵심: 스프레드시트처럼 2010년부터 주간 데이터 기준 확장 창(최대 260주=5년)
+    으로 OLS를 계산합니다. 2000년 데이터로 1260일 창을 쓰면 2010년 초
+    Growth가 닷컴·금융위기 영향을 받아 Eval이 완전히 달라집니다.
+    """
     try:
-        raw = yf.download(["QQQ", "TQQQ"], start="2000-01-01",
+        raw = yf.download(["QQQ", "TQQQ"], start="2010-01-01",
                           auto_adjust=True, progress=False)
-        df = (raw['Close'] if isinstance(raw.columns, pd.MultiIndex) else raw).copy()
+        if isinstance(raw.columns, pd.MultiIndex):
+            df = raw['Close'].copy()
+        else:
+            df = raw.copy()
         df = df.reset_index()
-        df.columns = [c.strip() for c in df.columns]
+        df.columns = [str(c).strip() for c in df.columns]
         if 'Date' not in df.columns:
             df.rename(columns={'index': 'Date'}, inplace=True)
+        df['Date'] = pd.to_datetime(df['Date'])
         df = df.dropna(subset=['QQQ']).reset_index(drop=True)
 
-        # O(n) Rolling OLS: log(QQQ) = a + b*t  →  Growth = exp(a + b*t_i)
-        W  = 1260
-        t  = df['Date'].map(pd.Timestamp.toordinal).values.astype(float)
-        y  = np.log(df['QQQ'].values.astype(float))
+        # ── 주간 QQQ (금요일) Expanding Window OLS ──────────────
+        # 주 순번 t = 1,2,3,... 사용 (ordinal 날짜보다 수치 안정)
+        # 창: 첫 260주는 expanding, 이후 fixed 260주
+        qqq_wkly = (df[df['Date'].dt.weekday == 4][['Date', 'QQQ']]
+                    .dropna().reset_index(drop=True))
+        n = len(qqq_wkly)
+        W = 260   # 5년 = 260주
 
-        cum_t  = np.cumsum(np.insert(t,    0, 0))
-        cum_y  = np.cumsum(np.insert(y,    0, 0))
-        cum_t2 = np.cumsum(np.insert(t**2, 0, 0))
-        cum_ty = np.cumsum(np.insert(t*y,  0, 0))
+        t = np.arange(1, n + 1, dtype=float)
+        y = np.log(qqq_wkly['QQQ'].values.astype(float))
 
-        growth = np.full(len(df), np.nan)
-        for i in range(W, len(df)):
-            s_t  = cum_t[i]  - cum_t[i-W]
-            s_y  = cum_y[i]  - cum_y[i-W]
-            s_t2 = cum_t2[i] - cum_t2[i-W]
-            s_ty = cum_ty[i] - cum_ty[i-W]
-            denom = W * s_t2 - s_t**2
-            if denom == 0:
+        # prefix sums (인덱스 0 = 0, 인덱스 i = 누적합 1..i)
+        ps_t  = np.zeros(n + 1); ps_t[1:]  = np.cumsum(t)
+        ps_y  = np.zeros(n + 1); ps_y[1:]  = np.cumsum(y)
+        ps_t2 = np.zeros(n + 1); ps_t2[1:] = np.cumsum(t ** 2)
+        ps_ty = np.zeros(n + 1); ps_ty[1:] = np.cumsum(t * y)
+
+        growth_wkly = np.empty(n)
+        for i in range(n):
+            w     = min(i + 1, W)
+            end   = i + 1        # prefix-sum 끝 인덱스 (포함)
+            start = end - w      # prefix-sum 시작 인덱스 (불포함)
+
+            if w == 1:           # 데이터 1개: 추세 = 가격 자체
+                growth_wkly[i] = float(qqq_wkly['QQQ'].iloc[i])
                 continue
-            b = (W * s_ty - s_t * s_y) / denom
-            a = (s_y - b * s_t) / W
-            growth[i] = np.exp(a + b * t[i])
 
-        df['Growth'] = growth
-        df['Eval']   = df['QQQ'] / df['Growth'] - 1
+            s_t  = ps_t[end]  - ps_t[start]
+            s_y  = ps_y[end]  - ps_y[start]
+            s_t2 = ps_t2[end] - ps_t2[start]
+            s_ty = ps_ty[end] - ps_ty[start]
+            denom = w * s_t2 - s_t ** 2
+            if denom == 0:
+                growth_wkly[i] = float(qqq_wkly['QQQ'].iloc[i])
+                continue
+            b = (w * s_ty - s_t * s_y) / denom
+            a = (s_y - b * s_t) / w
+            growth_wkly[i] = np.exp(a + b * t[i])
+
+        qqq_wkly['Growth'] = growth_wkly
+        qqq_wkly['Eval']   = qqq_wkly['QQQ'] / qqq_wkly['Growth'] - 1
+
+        # 일별 데이터에 주간 Growth/Eval 병합 (금요일 날짜 기준)
+        df = df.merge(qqq_wkly[['Date', 'Growth', 'Eval']], on='Date', how='left')
         return df
 
     except Exception as e:
@@ -344,7 +372,24 @@ with tab2:
 
         key_map = {"📋 현재": "현재", "🏆 최적화": "최적화", "🛡️ 안정형": "안정형"}
         pkey    = next((v for k, v in key_map.items() if k in preset), None)
-        P_DEF   = PRESETS[pkey] if pkey else PRESETS["현재"]
+
+        # ── 프리셋 선택 시 session_state 강제 갱신 ──────────────
+        # Streamlit은 key 있는 슬라이더의 value= 파라미터를 무시하므로
+        # 직접 session_state를 변경해야 슬라이더 값이 실제로 바뀜
+        _ss = st.session_state
+        if pkey and _ss.get('_last_preset') != pkey:
+            _ss['_last_preset'] = pkey
+            v = PRESETS[pkey]
+            _ss['bt_hc'] = v['hc'] * 100
+            _ss['bt_lc'] = v['lc'] * 100
+            _ss['bt_sH'] = v['sH']
+            _ss['bt_sM'] = v['sM']
+            _ss['bt_sL'] = v['sL']
+            _ss['bt_bH'] = v['bH']
+            _ss['bt_bM'] = v['bM']
+            _ss['bt_bL'] = v['bL']
+
+        P_DEF = PRESETS[pkey] if pkey else PRESETS["현재"]
 
         p1, p2, p3 = st.columns(3)
         with p1:
@@ -399,6 +444,22 @@ with tab2:
         st.stop()
 
     dates = pd.to_datetime(bt_cur['dates'])
+
+    # ── Eval 진단 (계산 검증용) ───────────────────────────────
+    ev = bt_cur['eval']
+    n_h = int((ev >= bt_hc).sum()); n_l = int((ev <= bt_lc).sum())
+    n_m = len(ev) - n_h - n_l
+    with st.expander("🔎 Eval(시장평가) 진단 — 티어 배분 확인", expanded=False):
+        d1, d2, d3, d4, d5 = st.columns(5)
+        d1.metric("중앙값",  f"{float(np.median(ev)):.2%}")
+        d2.metric("p10",    f"{float(np.percentile(ev,10)):.2%}")
+        d3.metric("p90",    f"{float(np.percentile(ev,90)):.2%}")
+        d4.metric("HIGH 비중", f"{n_h/len(ev):.1%}")
+        d5.metric("LOW 비중",  f"{n_l/len(ev):.1%}")
+        st.caption(
+            f"HIGH {n_h}주 / MID {n_m}주 / LOW {n_l}주 | "
+            f"스프레드시트 기준 약 HIGH 29% / MID 55% / LOW 17%"
+        )
 
     # ── 성과 지표 ─────────────────────────────────────────────
     st.markdown("### 📈 성과 지표")
