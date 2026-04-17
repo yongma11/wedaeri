@@ -108,11 +108,15 @@ def load_wedaeri_data():
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.dropna(subset=['QQQ']).reset_index(drop=True)
 
-        # ── 주간 QQQ (금요일) Expanding Window OLS ──────────────
+        # ── 주간 QQQ — W-FRI 리샘플로 주의 마지막 거래일 기준 ─────
+        # weekday==4 고정 필터 대신 resample('W-FRI').last() 사용:
+        # 금요일이 휴장(공휴일)인 주는 목요일 등 실제 마지막 거래일을 사용.
         # 주 순번 t = 1,2,3,... 사용 (ordinal 날짜보다 수치 안정)
         # 창: 첫 260주는 expanding, 이후 fixed 260주
-        qqq_wkly = (df[df['Date'].dt.weekday == 4][['Date', 'QQQ']]
-                    .dropna().reset_index(drop=True))
+        qqq_wkly = (df.set_index('Date')[['QQQ']]
+                    .resample('W-FRI').last()
+                    .dropna()
+                    .reset_index())
         n = len(qqq_wkly)
         W = 260   # 5년 = 260주
 
@@ -167,9 +171,11 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                     sH=1.5, sM=0.6, sL=0.35,
                     bH=0.4, bM=0.6, bL=2.0):
     sim  = data[data['Date'] >= pd.to_datetime(start_dt)].copy()
-    wkly = (sim[sim['Date'].dt.weekday == 4]
-            .dropna(subset=['Eval', 'TQQQ'])
-            .reset_index(drop=True))
+    # resample('W-FRI').last() : 금요일 휴장 주는 그 주 마지막 거래일 자동 사용
+    wkly = (sim.set_index('Date')[['TQQQ', 'Eval']]
+               .resample('W-FRI').last()
+               .dropna()
+               .reset_index())
     if wkly.empty or len(wkly) < 2:
         return pd.DataFrame()
 
@@ -221,9 +227,11 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
                       hc=0.07, lc=-0.07,
                       sH=1.5,  sM=0.6,  sL=0.35,
                       bH=0.4,  bM=0.6,  bL=2.0):
-    wkly = (data[data['Date'].dt.weekday == 4]
-            .dropna(subset=['Eval', 'TQQQ'])
-            .reset_index(drop=True))
+    # resample('W-FRI').last() : 금요일 휴장 주는 그 주 마지막 거래일 자동 사용
+    wkly = (data.set_index('Date')[['TQQQ', 'Eval']]
+                .resample('W-FRI').last()
+                .dropna()
+                .reset_index())
     if wkly.empty:
         return None
 
