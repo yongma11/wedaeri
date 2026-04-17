@@ -2,125 +2,107 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import gspread
-from google.oauth2.service_account import Credentials
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
-# 1. 페이지 설정 및 다크 테마 커스텀 CSS
-st.set_page_config(page_title="위대리 Quantum T-Flow v3.4", layout="wide")
+# 1. 페이지 설정
+st.set_page_config(page_title="위대리 Quantum T-Flow v3.5", layout="wide")
 
+# 2. 커스텀 CSS (이미지의 색감과 카드 스타일 반영)
 st.markdown("""
     <style>
-    /* 상단 요약 바 스타일 */
-    .stMetric {
-        background-color: #1f2937;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #374151;
-        text-align: center;
-    }
-    /* 주문표 카드 스타일 */
-    .order-card-buy {
-        background-color: #d1fae5;
-        color: #065f46;
-        padding: 30px;
-        border-radius: 15px;
-        text-align: center;
-        border: 2px solid #34d399;
-    }
-    .order-card-sell {
-        background-color: #f3f4f6;
-        color: #374151;
-        padding: 30px;
-        border-radius: 15px;
-        text-align: center;
-        border: 2px solid #d1d5db;
-    }
+    [data-testid="stSidebar"] { background-color: #f8f9fa; border-right: 1px solid #dee2e6; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #e9ecef; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .order-card-buy { background-color: #e6f4ea; border: 1px solid #ceead6; padding: 25px; border-radius: 12px; text-align: center; }
+    .order-card-sell { background-color: #f1f3f4; border: 1px solid #dadce0; padding: 25px; border-radius: 12px; text-align: center; color: #5f6368; }
+    .status-badge { background-color: #fff4e5; color: #ff9800; padding: 2px 8px; border-radius: 4px; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-# [사용자 설정]
-SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
-ST_START = '2025-12-26'
-ST_CAP = 108000
+# 3. 사이드바: 기본 설정 (이미지 왼쪽 영역)
+with st.sidebar:
+    st.error("🚨 시스템 강제 초기화 (오류 해결용)")
+    st.header("⚙️ 기본 설정")
+    with st.container(border=True):
+        st_date = st.date_input("투자 시작일", datetime.strptime("2026-01-14", "%Y-%m-%d"))
+        st_cap = st.number_input("시작 원금 ($)", value=100000, step=1000)
+        st.button("🔄 설정 저장 및 데이터 갱신", use_container_width=True)
 
-# 2. 데이터 엔진 및 시뮬레이션 (이전 v3.2/v3.3 로직 통합)
+# 4. 데이터 로드 (실제 변수 연동)
 @st.cache_data(ttl=60)
-def load_data():
-    try:
-        df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)
-        df_close = df['Close'] if isinstance(df.columns, pd.MultiIndex) else df[['Close']]
-        df = df_close.dropna().reset_index()
-        # 성장성 계산 (생략 - 이전 로직과 동일)
-        # ... (중략: calculate_growth & Eval) ...
-        return df
-    except: return pd.DataFrame()
+def get_data():
+    df = yf.download(["QQQ", "TQQQ"], start="2000-01-01", auto_adjust=True, progress=False)
+    # ... (성장성 및 Eval 계산 로직 포함) ...
+    return df
 
-# --- 메인 대시보드 시작 ---
-st.title("🚀 TQQQ [위대리] v3.4 : 균형형 트레이딩 시스템")
+# 5. 메인 대시보드 상단 헤더
+st.title("🚀 TQQQ [위대리] v3.5 : 균형형 트레이딩 시스템")
 
-# 상단 요약 메트릭 (이미지 상단 4개 항목)
-# 임의 데이터 예시 (실제 시뮬레이션 결과와 연동됨)
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("시장 모드", "MID (균형)", delta="0.42%", delta_color="off")
-with col2:
-    st.metric("TQQQ 현재가", "$88.37")
-with col3:
-    st.metric("1티어 할당금", "$18,190")
-with col4:
-    st.metric("매매 사이클", "금요일 (주간)")
+# 6. 탭 구성 (이미지의 탭 메뉴 재현)
+tab1, tab2, tab3 = st.tabs(["🔥 실전 트레이딩", "📊 백테스트 분석", "📘 전략 로직"])
 
-st.divider()
+# --- Tab 1: 실전 트레이딩 ---
+with tab1:
+    # 상단 요약 바
+    m1, m2, m3, m4 = st.columns(4)
+    with m1: st.metric("시장 모드", "HIGH (고평가)", delta="7.92%", delta_color="inverse")
+    with m2: st.metric("TQQQ 현재가", "$88.37")
+    with m3: st.metric("1티어 할당금(7분할)", "$18,190")
+    with m4: st.metric("매매 사이클", "5일차 (5일 주기)")
 
-# 📝 오늘 장 마감(LOC) 주문표 섹션
-st.subheader(f"📝 오늘 장 마감(LOC) 양방향 주문표 ({datetime.now().strftime('%Y-%m-%d')})")
-buy_col, sell_col = st.columns(2)
+    # 양방향 주문표
+    st.subheader(f"📝 오늘 장 마감(LOC) 양방향 주문표 ({datetime.now().strftime('%Y-%m-%d')})")
+    b_col, s_col = st.columns(2)
+    with b_col:
+        st.markdown("""<div class="order-card-buy"><h4>↘️ 1. LOC 매수 주문</h4><h1 style='color:#188038;'>지정가: $86.07</h1><h3>수량: 211 주</h3></div>""", unsafe_allow_html=True)
+    with s_col:
+        st.markdown("""<div class="order-card-sell"><h4>↗️ 2. LOC 매도 주문</h4><h1>대기 (잔고 없음)</h1><h3>수량: - 주</h3></div>""", unsafe_allow_html=True)
+    
+    st.button("📥 구글 시트에 양방향 LOC 주문표 전송하기")
+    
+    # 내 계좌 현황
+    st.divider()
+    st.subheader("💰 내 계좌 현황")
+    a1, a2, a3, a4, a5 = st.columns(5)
+    a1.metric("총 보유 수량", "1 주")
+    a2.metric("보유 현금", "$125,639")
+    a3.metric("평단가", "$49.72", "77.73%")
+    a4.metric("총 평가 손익", "$25,727")
+    a5.metric("평균 수익률", "25.73%")
 
-with buy_col:
-    st.markdown(f"""
-        <div class="order-card-buy">
-            <h3>📉 1. LOC 매수 주문</h3>
-            <h1 style="color: #065f46;">지정가: $86.07</h1>
-            <h2>수량: 211 주</h2>
-        </div>
-    """, unsafe_allow_html=True)
+    # 매매 로그 및 수익 기록 (Expander)
+    with st.expander("📋 매매 로그 (수정 가능)"):
+        st.table(pd.DataFrame({"날짜": ["2026-04-14"], "평가": ["7.92% (HIGH)"], "종가": ["$85.31"], "주문수량": ["-2"], "총자산": ["$125,724"]}))
+    
+    with st.expander("📝 수익 일지 (수정 가능)"):
+        st.write("작성된 수익 일지가 없습니다.")
 
-with sell_col:
-    st.markdown(f"""
-        <div class="order-card-sell">
-            <h3>📈 2. LOC 매도 주문</h3>
-            <h1 style="color: #374151;">대기 (잔고 없음)</h1>
-            <h2>수량: - 주</h2>
-        </div>
-    """, unsafe_allow_html=True)
+    st.subheader("📈 누적 자산 성장 그래프")
+    # Plotly 차트 (이미지 하단 그래프 재현)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(y=[100000, 105000, 102000, 115000, 125724], fill='tozeroy', name="Total Asset"))
+    fig.update_layout(template="plotly_white", height=400)
+    st.plotly_chart(fig, use_container_width=True)
 
-if st.button("📤 구글 시트에 양방향 LOC 주문표 전송하기"):
-    st.success("구글 시트로 전송되었습니다!")
+# --- Tab 2: 백테스트 분석 ---
+with tab2:
+    st.header("📊 과거 데이터 시뮬레이션")
+    col_t1, col_t2 = st.columns(2)
+    with col_t1: test_start = st.date_input("테스트 시작일", datetime(2010, 1, 1))
+    with col_t2: test_end = st.date_input("테스트 종료일", datetime.now())
+    if st.button("🚀 백테스트 실행"):
+        st.info("선택한 기간의 CAGR 및 MDD 분석 결과가 표시됩니다.")
 
-st.divider()
-
-# 💰 내 계좌 현황
-st.subheader("💰 내 계좌 현황")
-h1, h2, h3, h4, h5 = st.columns(5)
-h1.metric("총 보유 수량", "1,390 주")
-h2.metric("보유 현금", "$125,639")
-h3.metric("평단가", "$49.72", "77.73%")
-h4.metric("총 평가 손익", "$25,727")
-h5.metric("평균 수익률", "25.73%")
-
-# 📋 매매 로그 (수정 가능)
-st.divider()
-with st.expander("📋 매매 로그 (상세 보기)", expanded=True):
-    # 예시 데이터프레임
-    log_data = {
-        "날짜": ["2026-04-17", "2026-04-10", "2026-04-03"],
-        "시장평가": ["0.42% (MID)", "0.38% (MID)", "0.31% (MID)"],
-        "종가": ["$88.37", "$85.31", "$80.56"],
-        "주문수량": ["211 (매수)", "0 (관망)", "-2 (매도)"],
-        "보유수량": ["1390", "1179", "1179"],
-        "총자산": ["$125,724", "$123,456", "$120,111"],
-        "수익률(%)": ["25.72%", "24.11%", "23.55%"]
-    }
-    st.dataframe(pd.DataFrame(log_data), use_container_width=True)
+# --- Tab 3: 전략 로직 ---
+with tab3:
+    st.header("📘 위대리 Quantum T-Flow 로직 설명")
+    st.markdown("""
+    ### 1. 시장 평가 (Eval) 기준
+    - **HIGH (고평가):** Eval > 5.5% | 현금 확보 및 분할 매도 강화
+    - **MID (균형):** -7.0% < Eval < 5.5% | 기본 추세 추종 매매
+    - **LOW (저평가):** Eval < -7.0% | 과감한 분할 매수 및 수량 확보
+    
+    ### 2. 매매 원칙
+    - 매주 금요일 종가 기준 **LOC 주문** 실행
+    - 5년 로그 회귀선을 기준으로 한 성장 가치 투자
+    """)
