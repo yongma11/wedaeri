@@ -26,12 +26,12 @@ INIT_CASH_PCT = 0.45           # 초기 현금 비중 (45% → 주식 55%)
 
 # 전략 파라미터
 PARAMS = {
-    'hc': 0.07,   # HIGH 기준 Eval ≥ +7%
-    'lc': -0.07,  # LOW  기준 Eval ≤ -7%
-    'sH': 1.5,    # HIGH 매도 배율
-    'sM': 0.6,    # MID  매도 배율
-    'sL': 0.35,   # LOW  매도 배율
-    'bH': 0.4,    # HIGH 매수 배율
+    'hc': 0.06,   # HIGH 기준 Eval ≥ +7%
+    'lc': -0.06,  # LOW  기준 Eval ≤ -7%
+    'sH': 2.0,    # HIGH 매도 배율
+    'sM': 0.4,    # MID  매도 배율
+    'sL': 0.2,   # LOW  매도 배율
+    'bH': 1.0,    # HIGH 매수 배율
     'bM': 0.6,    # MID  매수 배율
     'bL': 2.0,    # LOW  매수 배율
 }
