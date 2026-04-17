@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 SHEET_KEY     = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
 START_DATE    = '2025-12-26'   # 매매 시작일 (YYYY-MM-DD)
 INITIAL_CAP   = 108_000        # 시작 원금 ($)
-INIT_CASH_PCT = 0.20           # 초기 현금 비중 (20% → 주식 80%)
+INIT_CASH_PCT = 0.45           # 초기 현금 비중 (45% → 주식 55%)
 
 # 전략 파라미터
 PARAMS = {
