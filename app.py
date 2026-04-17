@@ -68,19 +68,19 @@ with st.sidebar:
 
 | 티어 | Eval 조건 | 매도× | 매수× |
 |------|----------|-------|-------|
-| HIGH | ≥ +5.5%  | 1.5   | 0.5   |
+| HIGH | ≥ +7.0%  | 1.5   | 0.4   |
 | MID  | 중간      | 0.6   | 0.6   |
-| LOW  | ≤ −7%   | 0.33  | 2.0   |
+| LOW  | ≤ −7%   | 0.35  | 2.0   |
 
 **📌 최적화 파라미터**
 
 | 티어 | Eval 조건 | 매도× | 매수× |
 |------|----------|-------|-------|
-| HIGH | ≥ +5.5%  | 2.0   | 0.5   |
-| MID  | 중간      | 0.6   | 1.0   |
-| LOW  | ≤ −10%  | 0.5   | 5.0   |
+| HIGH | ≥ +6.0%  | 2.0   | 1.0   |
+| MID  | 중간      | 0.3   | 0.6   |
+| LOW  | ≤ −6%   | 0.2   | 2.0   |
 
-CAGR +9.5%p, MDD 개선
+CAGR ~43%, MDD ~31%
 """)
 
 # ─────────────────────────────────────────────────────────────
@@ -163,9 +163,9 @@ def load_wedaeri_data():
 # 4. 실전 시뮬레이션 (Tab 1용 — 지정 시작일부터)
 # ─────────────────────────────────────────────────────────────
 def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
-                    hc=0.055, lc=-0.07,
-                    sH=1.5, sM=0.6, sL=0.33,
-                    bH=0.5, bM=0.6, bL=2.0):
+                    hc=0.07, lc=-0.07,
+                    sH=1.5, sM=0.6, sL=0.35,
+                    bH=0.4, bM=0.6, bL=2.0):
     sim  = data[data['Date'] >= pd.to_datetime(start_dt)].copy()
     wkly = (sim[sim['Date'].dt.weekday == 4]
             .dropna(subset=['Eval', 'TQQQ'])
@@ -217,10 +217,10 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
 # ─────────────────────────────────────────────────────────────
 # 5. 전체 기간 백테스트 (Tab 2용)
 # ─────────────────────────────────────────────────────────────
-def run_full_backtest(data, init_cap=20_000, cash_ratio=0.50,
-                      hc=0.055, lc=-0.07,
-                      sH=1.5,  sM=0.6,  sL=0.33,
-                      bH=0.5,  bM=0.6,  bL=2.0):
+def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
+                      hc=0.07, lc=-0.07,
+                      sH=1.5,  sM=0.6,  sL=0.35,
+                      bH=0.4,  bM=0.6,  bL=2.0):
     wkly = (data[data['Date'].dt.weekday == 4]
             .dropna(subset=['Eval', 'TQQQ'])
             .reset_index(drop=True))
@@ -295,7 +295,7 @@ tqqq_series = df['TQQQ'].dropna()
 latest_tqqq = float(tqqq_series.iloc[-1]) if not tqqq_series.empty else 0.0
 eval_series  = df['Eval'].dropna()
 latest_eval  = float(eval_series.iloc[-1]) if not eval_series.empty else 0.0
-latest_tier  = 'HIGH' if latest_eval >= 0.055 else ('LOW' if latest_eval <= -0.07 else 'MID')
+latest_tier  = 'HIGH' if latest_eval >= 0.07 else ('LOW' if latest_eval <= -0.07 else 'MID')
 
 st.title("🚀 TQQQ [위대리] v4.0 : 균형형 트레이딩 시스템")
 tab1, tab2, tab3 = st.tabs(["🔥 실전 트레이딩", "📊 백테스트 분석", "📘 전략 로직"])
@@ -357,17 +357,20 @@ with tab2:
 
         preset = st.selectbox(
             "파라미터 프리셋 선택",
-            ["📋 현재 파라미터  (CAGR ~38%, MDD ~31%)",
-             "🏆 최적화 파라미터 (CAGR ~48%, MDD ~28%)",
-             "🛡️ 안정형 파라미터 (MDD 중시)",
+            ["📋 현재 파라미터  (CAGR ~42%, MDD ~32%)",
+             "🏆 최적화 파라미터 (CAGR ~43%, MDD ~31%)",
+             "🛡️ 안정형 파라미터 (CAGR ~36%, MDD ~24%)",
              "✏️ 직접 설정"],
             index=0
         )
 
         PRESETS = {
-            "현재":  dict(hc=0.055, lc=-0.07,  sH=1.5, sM=0.6, sL=0.33, bH=0.5, bM=0.6, bL=2.0),
-            "최적화": dict(hc=0.055, lc=-0.10,  sH=2.0, sM=0.6, sL=0.5,  bH=0.5, bM=1.0, bL=5.0),
-            "안정형": dict(hc=0.08,  lc=-0.10,  sH=2.0, sM=0.6, sL=0.5,  bH=0.5, bM=0.6, bL=5.0),
+            # 스크린샷 기준 — hc 7%, lc -7%, init_cash 40%
+            "현재":  dict(hc=0.07, lc=-0.07, sH=1.5, sM=0.6,  sL=0.35, bH=0.4, bM=0.6, bL=2.0),
+            # 최적화 결과 — MDD 35% 이내 최대 CAGR (Grid Search)
+            "최적화": dict(hc=0.06, lc=-0.06, sH=2.0, sM=0.3,  sL=0.2,  bH=1.0, bM=0.6, bL=2.0),
+            # 안정형 — MDD 25% 이내 최적
+            "안정형": dict(hc=0.06, lc=-0.10, sH=2.0, sM=0.6,  sL=0.33, bH=1.0, bM=1.0, bL=2.0),
         }
 
         key_map = {"📋 현재": "현재", "🏆 최적화": "최적화", "🛡️ 안정형": "안정형"}
@@ -395,7 +398,7 @@ with tab2:
         with p1:
             st.markdown("**기본 설정**")
             bt_cap        = st.number_input("초기 자본 ($)", value=20_000, step=1000, key='bt_cap')
-            bt_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100, 50, key='bt_cr') / 100
+            bt_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100, 40, key='bt_cr') / 100
             st.markdown("**시장 평가 기준**")
             bt_hc = st.slider("HIGH 기준 Eval ≥ (%)", 1.0, 20.0,
                                P_DEF['hc']*100, 0.5, key='bt_hc') / 100
@@ -404,15 +407,15 @@ with tab2:
 
         with p2:
             st.markdown("**매도 배율** (상승 시 차익실현 강도)")
-            bt_sH = st.slider("매도 HIGH ×", 0.1, 5.0,  P_DEF['sH'], 0.1, key='bt_sH')
-            bt_sM = st.slider("매도 MID  ×", 0.1, 3.0,  P_DEF['sM'], 0.1, key='bt_sM')
-            bt_sL = st.slider("매도 LOW  ×", 0.1, 2.0,  P_DEF['sL'], 0.05, key='bt_sL')
+            bt_sH = st.slider("매도 HIGH ×", 0.1, 5.0,  P_DEF['sH'], 0.05, key='bt_sH')
+            bt_sM = st.slider("매도 MID  ×", 0.1, 3.0,  P_DEF['sM'], 0.05, key='bt_sM')
+            bt_sL = st.slider("매도 LOW  ×", 0.05, 2.0, P_DEF['sL'], 0.05, key='bt_sL')
 
         with p3:
             st.markdown("**매수 배율** (하락 시 추가 매수 강도)")
-            bt_bH = st.slider("매수 HIGH ×", 0.1, 3.0,  P_DEF['bH'], 0.1, key='bt_bH')
-            bt_bM = st.slider("매수 MID  ×", 0.1, 3.0,  P_DEF['bM'], 0.1, key='bt_bM')
-            bt_bL = st.slider("매수 LOW  ×", 0.5, 10.0, P_DEF['bL'], 0.5, key='bt_bL')
+            bt_bH = st.slider("매수 HIGH ×", 0.1, 3.0,  P_DEF['bH'], 0.05, key='bt_bH')
+            bt_bM = st.slider("매수 MID  ×", 0.1, 3.0,  P_DEF['bM'], 0.05, key='bt_bM')
+            bt_bL = st.slider("매수 LOW  ×", 0.5, 10.0, P_DEF['bL'], 0.25, key='bt_bL')
 
         if pkey:
             vals = PRESETS[pkey]
@@ -434,9 +437,9 @@ with tab2:
         )
         bt_opt = run_full_backtest(
             df, bt_cap, bt_cash_ratio,
-            hc=0.055, lc=-0.10,
-            sH=2.0, sM=0.6, sL=0.5,
-            bH=0.5,  bM=1.0, bL=5.0,
+            hc=0.06, lc=-0.06,
+            sH=2.0, sM=0.3, sL=0.2,
+            bH=1.0, bM=0.6, bL=2.0,
         )
 
     if bt_cur is None:
@@ -714,7 +717,7 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
                 fillcolor='rgba(96,165,250,0.2)',
                 name='Eval'
             ))
-            fig_e.add_hline(y=5.5,  line_color='#fbbf24', line_dash='dash', line_width=1,
+            fig_e.add_hline(y=7.0,  line_color='#fbbf24', line_dash='dash', line_width=1,
                              annotation_text="HIGH", annotation_font=dict(color='#fbbf24', size=9))
             fig_e.add_hline(y=-7.0, line_color='#4ade80', line_dash='dash', line_width=1,
                              annotation_text="LOW",  annotation_font=dict(color='#4ade80', size=9))
@@ -737,13 +740,13 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
         st.markdown("""
 <div class="tier-high">
 <h4>🟡 HIGH 티어 — 과열 구간</h4>
-<b>조건:</b> Eval ≥ +5.5%<br><br>
+<b>조건:</b> Eval ≥ +7.0%<br><br>
 시장이 추세보다 뜨거운 상태.<br>
 주가 상승 시 차익을 적극 실현해<br>
 현금을 축적합니다.<br><br>
 <table width="100%">
   <tr><td>매도 배율</td><td align="right"><b>1.5× (기본)</b></td></tr>
-  <tr><td>매수 배율</td><td align="right">0.5×</td></tr>
+  <tr><td>매수 배율</td><td align="right">0.4×</td></tr>
 </table>
 → <b>팔아서 현금 쌓기</b>
 </div>
@@ -753,7 +756,7 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
         st.markdown("""
 <div class="tier-mid">
 <h4>🔵 MID 티어 — 중립 구간</h4>
-<b>조건:</b> −7% < Eval < +5.5%<br><br>
+<b>조건:</b> −7% < Eval < +7.0%<br><br>
 시장이 추세 근처에서 움직이는<br>
 평상시 상태.<br>
 균형 잡힌 비율로<br>기계적 리밸런싱.<br><br>
@@ -774,7 +777,7 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
 역사적으로 가장 강한<br>
 매수 기회 구간.<br><br>
 <table width="100%">
-  <tr><td>매도 배율</td><td align="right">0.33×</td></tr>
+  <tr><td>매도 배율</td><td align="right">0.35×</td></tr>
   <tr><td>매수 배율</td><td align="right"><b>2.0× ★</b></td></tr>
 </table>
 → <b>공격적 매수 — 핵심!</b>
@@ -816,7 +819,7 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
 
 - **HIGH 티어** → 1.5× : 수익의 1.5배 어치 매도 (적극 실현)
 - **MID 티어** → 0.6× : 수익의 60%만 매도 (적정 실현)
-- **LOW 티어** → 0.33× : 수익의 33%만 매도 (최소 실현)
+- **LOW 티어** → 0.35× : 수익의 35%만 매도 (최소 실현)
 
 → 과열 구간에서 더 많이 팔아 현금을 쌓아둡니다.
 → 이 현금이 LOW 티어 발생 시 매수 탄약이 됩니다.
@@ -828,13 +831,13 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
 
 평가 손실의 배율만큼 현금을 투입해 추가 매수합니다.
 
-- **HIGH 티어** → 0.5× : 손실의 50% 예산 매수 (소극)
+- **HIGH 티어** → 0.4× : 손실의 40% 예산 매수 (소극)
 - **MID 티어** → 0.6× : 손실의 60% 예산 매수 (적정)
 - **LOW 티어** → 2.0× : 손실의 200% 예산 매수 (공격 ★)
 
 → 시장이 차가울수록 더 많이 사서 평균 단가를 낮춥니다.
 → 현금이 부족하면 LOW 티어 기회를 살릴 수 없으므로
-  초기 현금 비중 40~50% 유지를 권장합니다.
+  초기 현금 비중 40% 유지를 권장합니다.
 """)
 
     st.divider()
@@ -847,18 +850,18 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
                        '매도 HIGH', '매도 MID', '매도 LOW',
                        '매수 HIGH', '매수 MID', '매수 LOW ★',
                        '— 결과 —', 'CAGR', 'MDD', 'Calmar'],
-        '현재 설정':   ['+5.5%', '−7.0%',
-                       '1.5×', '0.6×', '0.33×',
-                       '0.5×', '0.6×', '2.0×',
-                       '', '~38%', '~31%', '~1.24'],
-        '최적화 설정': ['+5.5%', '−10.0%',
-                       '2.0×', '0.6×', '0.5×',
-                       '0.5×', '1.0×', '5.0× ★',
-                       '', '~48%', '~28%', '~1.70'],
-        '변화 핵심':   ['동일', 'LOW 범위 확장 → MDD 개선',
-                       '과열 시 더 적극 실현', '동일', 'LOW일 때 최소 실현',
-                       '동일', '중립 시 매수 강화', '저점 시 초공격적 매수',
-                       '', '+9.5%p 개선', '3%p 개선', '0.46 개선'],
+        '현재 설정':   ['+7.0%', '−7.0%',
+                       '1.5×', '0.6×', '0.35×',
+                       '0.4×', '0.6×', '2.0×',
+                       '', '~42%', '~32%', '~1.32'],
+        '최적화 설정': ['+6.0%', '−6.0%',
+                       '2.0×', '0.3×', '0.2×',
+                       '1.0×', '0.6×', '2.0×',
+                       '', '~43%', '~31%', '~1.40'],
+        '변화 핵심':   ['기준 하향 → 더 빠른 차익', 'LOW 범위 축소',
+                       '과열 시 더 적극 실현', '중립 매도 줄임', 'LOW일 때 최소 실현',
+                       '과열 시 매수 강화', '중립 매수 소폭 감소', '저점 시 공격 유지',
+                       '', '+1%p 개선', '1%p 개선', '0.08 개선'],
     })
     st.dataframe(param_df, use_container_width=True, hide_index=True)
 
@@ -903,9 +906,9 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
 
 | 항목 | 위대리 (현재) | 위대리 (최적화) | TQQQ B&H |
 |------|:---:|:---:|:---:|
-| **연평균 수익(CAGR)** | ~38% | **~48%** | ~40% |
-| **최대 낙폭(MDD)** | **~31%** | **~28%** | ~80% |
-| **Calmar (수익/위험)** | 1.24 | **1.70** | ~0.50 |
+| **연평균 수익(CAGR)** | ~42% | **~43%** | ~40% |
+| **최대 낙폭(MDD)** | **~32%** | **~31%** | ~80% |
+| **Calmar (수익/위험)** | 1.32 | **1.40** | ~0.50 |
 | **심리적 안정성** | ★★★★☆ | ★★★★★ | ★★☆☆☆ |
 | **주간 주문 횟수** | 1회 | 1회 | 없음 |
 
