@@ -1,3 +1,9 @@
+# wedaeri_bot.py — TQQQ 위대리 오토봇
+# ▸ 주간 Expanding Window OLS (wedaeri_app.py 동일 로직)
+# ▸ W-FRI resample 기반 — 금요일 휴장 주도 정확 처리
+# ▸ 3-티어 시스템 (HIGH / MID / LOW)
+# ▸ Google Sheets + Telegram 자동 업데이트
+
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -8,165 +14,308 @@ import requests
 import warnings
 from datetime import datetime, timedelta
 
-# 1. 환경 설정 및 경고 무시
-warnings.filterwarnings('ignore', message='Polyfit may be poorly conditioned')
+warnings.filterwarnings('ignore')
 
-# [사용자 개인 설정]
-SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
-START_DATE = '2026-02-02'  # 매매 시작일
-INITIAL_CAP = 100000       # 시작 원금 ($)
-INITIAL_RATIO = 0.59       # 초기 진입 비중 (59%)
+# ─────────────────────────────────────────────────────────────
+# [사용자 설정] — 필요 시 여기만 수정
+# ─────────────────────────────────────────────────────────────
+SHEET_KEY     = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
+START_DATE    = '2025-12-26'   # 매매 시작일 (YYYY-MM-DD)
+INITIAL_CAP   = 108_000        # 시작 원금 ($)
+INIT_CASH_PCT = 0.20           # 초기 현금 비중 (20% → 주식 80%)
 
-def calculate_longterm_growth(series, dates, window=1260):
-    results = [np.nan] * len(series)
-    date_nums = dates.map(pd.Timestamp.toordinal).values
-    values = series.values
-    for i in range(window, len(series)):
-        try:
-            fit = np.polyfit(date_nums[window:i+1], np.log(values[window:i+1]), 1)
-            pred_log = fit[1] + fit[0] * date_nums[i]
-            results[i] = np.exp(pred_log)
-        except: pass
-    return pd.Series(results, index=series.index)
+# 전략 파라미터
+PARAMS = {
+    'hc': 0.07,   # HIGH 기준 Eval ≥ +7%
+    'lc': -0.07,  # LOW  기준 Eval ≤ -7%
+    'sH': 1.5,    # HIGH 매도 배율
+    'sM': 0.6,    # MID  매도 배율
+    'sL': 0.35,   # LOW  매도 배율
+    'bH': 0.4,    # HIGH 매수 배율
+    'bM': 0.6,    # MID  매수 배율
+    'bL': 2.0,    # LOW  매수 배율
+}
 
-def send_telegram(text):
-    bot_token = "7524501477:AAEJu3xmHi2Mjxb86ARc6KtMfBh9H9pRZIM"
-    chat_id = "1442265681"
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+# Telegram
+BOT_TOKEN = "7524501477:AAEJu3xmHi2Mjxb86ARc6KtMfBh9H9pRZIM"
+CHAT_ID   = "1442265681"
+
+
+# ─────────────────────────────────────────────────────────────
+# 1. Expanding Window OLS (wedaeri_app.py 동일 알고리즘)
+# ─────────────────────────────────────────────────────────────
+def compute_expanding_ols(qqq_weekly: pd.DataFrame, W: int = 260) -> np.ndarray:
+    """
+    주간 QQQ 시계열로 5년(260주) Expanding Window log-선형 회귀를 계산합니다.
+    - 처음 W주까지는 expanding window (1주씩 확장)
+    - W주 이후에는 고정 260주 슬라이딩 윈도우
+    - 주 순번(t=1,2,3,…)을 독립변수로 사용 (ordinal 날짜보다 수치 안정)
+    - prefix-sum으로 O(n) 연산
+    """
+    n = len(qqq_weekly)
+    t = np.arange(1, n + 1, dtype=float)
+    y = np.log(qqq_weekly['QQQ'].values.astype(float))
+
+    ps_t  = np.zeros(n + 1); ps_t[1:]  = np.cumsum(t)
+    ps_y  = np.zeros(n + 1); ps_y[1:]  = np.cumsum(y)
+    ps_t2 = np.zeros(n + 1); ps_t2[1:] = np.cumsum(t ** 2)
+    ps_ty = np.zeros(n + 1); ps_ty[1:] = np.cumsum(t * y)
+
+    growth = np.empty(n)
+    for i in range(n):
+        w     = min(i + 1, W)
+        end   = i + 1
+        start = end - w
+
+        if w == 1:
+            growth[i] = float(qqq_weekly['QQQ'].iloc[i])
+            continue
+
+        s_t  = ps_t[end]  - ps_t[start]
+        s_y  = ps_y[end]  - ps_y[start]
+        s_t2 = ps_t2[end] - ps_t2[start]
+        s_ty = ps_ty[end] - ps_ty[start]
+        denom = w * s_t2 - s_t ** 2
+
+        if denom == 0:
+            growth[i] = float(qqq_weekly['QQQ'].iloc[i])
+            continue
+
+        b = (w * s_ty - s_t * s_y) / denom
+        a = (s_y - b * s_t) / w
+        growth[i] = np.exp(a + b * t[i])
+
+    return growth
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. Telegram 발송
+# ─────────────────────────────────────────────────────────────
+def send_telegram(text: str) -> None:
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
-    except: pass
+        requests.post(url, json={
+            "chat_id": CHAT_ID,
+            "text": text,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception:
+        pass
 
+
+# ─────────────────────────────────────────────────────────────
+# 3. 티어 판정 (3-tier)
+# ─────────────────────────────────────────────────────────────
+def get_tier(eval_val: float, hc: float, lc: float) -> str:
+    if eval_val >= hc:
+        return 'HIGH'
+    if eval_val <= lc:
+        return 'LOW'
+    return 'MID'
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. 메인
+# ─────────────────────────────────────────────────────────────
 def main():
-    print("🚀 [위대리 v2.9] 오토봇 가동 시작...")
-    
+    print("🚀 [위대리] 오토봇 가동 시작...")
+
+    # ── A. GCP 인증 & 시트 연결 ──────────────────────────────
     creds_raw = os.environ.get('GCP_CREDENTIALS')
-    if not creds_raw: return
+    if not creds_raw:
+        print("❌ GCP_CREDENTIALS 환경변수가 없습니다.")
+        return
 
     try:
-        # --- A. 인증 및 시트 연결 ---
         creds_dict = json.loads(creds_raw)
         if 'private_key' in creds_dict:
             creds_dict['private_key'] = creds_dict['private_key'].replace('\\n', '\n')
         gc = gspread.service_account_from_dict(creds_dict)
         sh = gc.open_by_key(SHEET_KEY)
         ws = sh.worksheet("위대리")
+    except Exception as e:
+        print(f"❌ 시트 연결 실패: {e}")
+        return
 
-        # --- B. 데이터 수집 및 현재가 확정 ---
+    try:
+        # ── B. 일별 데이터 수집 (2010년 기준 — Expanding OLS 시작점) ──
         end_dt = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-        df_raw = yf.download(["QQQ", "TQQQ"], start="2000-01-01", end=end_dt, auto_adjust=True, progress=False)
-        df_close = df_raw['Close'] if isinstance(df_raw.columns, pd.MultiIndex) else df_raw[['Close']]
-        df = df_close.dropna().reset_index()
-        if 'Date' not in df.columns: df.rename(columns={'index': 'Date'}, inplace=True)
+        df_raw = yf.download(
+            ["QQQ", "TQQQ"], start="2010-01-01", end=end_dt,
+            auto_adjust=True, progress=False
+        )
+        df = (df_raw['Close'] if isinstance(df_raw.columns, pd.MultiIndex)
+              else df_raw).dropna().reset_index()
+        if 'Date' not in df.columns:
+            df.rename(columns={'index': 'Date'}, inplace=True)
+        df['Date'] = pd.to_datetime(df['Date'])
 
-        t_ticker = yf.Ticker("TQQQ")
-        live_p = float(t_ticker.fast_info['last_price'])
-        live_d = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
-        
-        if live_d > pd.to_datetime(df['Date'].iloc[-1]):
-            new_row = pd.DataFrame({'Date': [live_d], 'TQQQ': [live_p], 'QQQ': [yf.Ticker("QQQ").fast_info['last_price']]})
+        # ── C. 현재가 반영 (라이브) ───────────────────────────
+        live_tqqq = float(yf.Ticker("TQQQ").fast_info['last_price'])
+        live_qqq  = float(yf.Ticker("QQQ").fast_info['last_price'])
+        live_date = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
+
+        if live_date > df['Date'].iloc[-1]:
+            new_row = pd.DataFrame({
+                'Date': [live_date], 'TQQQ': [live_tqqq], 'QQQ': [live_qqq]
+            })
             df = pd.concat([df, new_row], ignore_index=True)
         else:
-            df.loc[df.index[-1], 'TQQQ'] = live_p
-        
+            df.loc[df.index[-1], 'TQQQ'] = live_tqqq
+            df.loc[df.index[-1], 'QQQ']  = live_qqq
+
         cur_p = round(float(df['TQQQ'].iloc[-1]), 2)
 
-        # --- C. 지표 계산 ---
-        df['Growth'] = calculate_longterm_growth(df['QQQ'], df['Date'])
-        df['Eval'] = (df['QQQ'] / df['Growth']) - 1
-        
-        weekly = df[df['Date'].dt.weekday == 4].copy()
-        sim_data = weekly[weekly['Date'] >= pd.to_datetime(START_DATE)].copy().reset_index(drop=True)
+        # ── D. 주간 데이터 생성 (W-FRI resample) ─────────────
+        # 금요일 휴장 주도 그 주 마지막 거래일로 자동 처리
+        df_idx = df.set_index('Date')
 
-        # --- D. 잔고 및 수량 시뮬레이션 (과거 복기) ---
-        settings = {
-            'uhigh_cut': 0.10, 'high_cut': 0.05, 'low_cut': -0.06, 'ulow_cut': -0.10,
-            'sell_ratios': {'UHIGH': 1.5, 'HIGH': 1.0, 'MID': 0.6, 'LOW': 0.6, 'ULOW': 0.3},
-            'buy_ratios': {'UHIGH': 0.3, 'HIGH': 0.6, 'MID': 0.6, 'LOW': 1.2, 'ULOW': 2.0}
-        }
-        max_c = INITIAL_CAP
+        qqq_weekly = (df_idx[['QQQ']]
+                      .resample('W-FRI').last()
+                      .dropna()
+                      .reset_index())
 
-        # 초기 진입
-        first_row = sim_data.iloc[0]
-        shares = int((INITIAL_CAP * INITIAL_RATIO) / first_row['TQQQ'])
-        cash = INITIAL_CAP - (shares * first_row['TQQQ'])
-        avg_price = first_row['TQQQ']
-        
-        # 마지막 주 직전까지의 매매 복기
-        for i in range(1, len(sim_data)-1):
-            p = sim_data.loc[i, 'TQQQ']
-            prev_p = sim_data.loc[i-1, 'TQQQ']
-            m_eval = sim_data.loc[i, 'Eval']
-            tier = 'MID'
-            if m_eval > settings['uhigh_cut']: tier = 'UHIGH'
-            elif m_eval > settings['high_cut']: tier = 'HIGH'
-            elif m_eval < settings['ulow_cut']: tier = 'ULOW'
-            elif m_eval < settings['low_cut']: tier = 'LOW'
+        tqqq_weekly = (df_idx[['TQQQ']]
+                       .resample('W-FRI').last()
+                       .dropna()
+                       .reset_index())
 
-            price_diff = (shares * p) - (shares * prev_p)
-            if price_diff > 0 and shares > 0:
-                q_sell = int(min(round((price_diff * settings['sell_ratios'][tier]) / p), shares))
-                shares -= q_sell
-                cash += (q_sell * p)
-            elif price_diff < 0:
-                avail = max_c - (INITIAL_CAP - cash)
-                if avail > 0:
-                    q_buy = int(min(cash, abs(price_diff) * settings['buy_ratios'][tier], avail) / p)
-                    shares += q_buy
-                    cash -= (q_buy * p)
+        # ── E. Expanding Window OLS → Eval 계산 ──────────────
+        growth = compute_expanding_ols(qqq_weekly, W=260)
+        qqq_weekly['Growth'] = growth
+        qqq_weekly['Eval']   = qqq_weekly['QQQ'] / qqq_weekly['Growth'] - 1
 
-        # --- E. 이번 주(최신 데이터) 주문량 계산 ---
-        last_row = sim_data.iloc[-1]
-        prev_row = sim_data.iloc[-2]
-        last_eval = last_row['Eval']
-        
-        cur_price_diff = (shares * last_row['TQQQ']) - (shares * prev_row['TQQQ'])
-        
-        # 이번 주 티어 판정
-        this_tier = 'MID'
-        if last_eval > settings['uhigh_cut']: this_tier = 'UHIGH'
-        elif last_eval > settings['high_cut']: this_tier = 'HIGH'
-        elif last_eval < settings['ulow_cut']: this_tier = 'ULOW'
-        elif last_eval < settings['low_cut']: this_tier = 'LOW'
+        # 주간 TQQQ 와 병합
+        weekly = qqq_weekly.merge(tqqq_weekly, on='Date', how='inner')
 
+        # ── F. 시작일부터 시뮬레이션 데이터 필터 ─────────────
+        sim = (weekly[weekly['Date'] >= pd.to_datetime(START_DATE)]
+               .dropna(subset=['Eval', 'TQQQ'])
+               .reset_index(drop=True))
+
+        if len(sim) < 2:
+            msg = "⚠️ [위대리] 시뮬레이션 데이터 부족 (시작일 이후 데이터가 2주 미만)"
+            print(msg); send_telegram(msg)
+            return
+
+        # ── G. 초기 잔고 설정 ─────────────────────────────────
+        init_stock_ratio = 1.0 - INIT_CASH_PCT
+        init_price       = float(sim.loc[0, 'TQQQ'])
+        shares           = int((INITIAL_CAP * init_stock_ratio) / init_price)
+        cash             = INITIAL_CAP - (shares * init_price)
+
+        hc = PARAMS['hc']; lc = PARAMS['lc']
+        sH = PARAMS['sH']; sM = PARAMS['sM']; sL = PARAMS['sL']
+        bH = PARAMS['bH']; bM = PARAMS['bM']; bL = PARAMS['bL']
+
+        sell_r = {'HIGH': sH, 'MID': sM, 'LOW': sL}
+        buy_r  = {'HIGH': bH, 'MID': bM, 'LOW': bL}
+
+        # ── H. 과거 매매 복기 (시작일+1 ~ 마지막 주 직전) ────
+        for i in range(1, len(sim) - 1):
+            p      = float(sim.loc[i,   'TQQQ'])
+            prev_p = float(sim.loc[i-1, 'TQQQ'])
+            ev     = float(sim.loc[i,   'Eval'])
+            tier   = get_tier(ev, hc, lc)
+            diff   = shares * (p - prev_p)  # 평가 손익
+
+            if diff > 0 and shares > 0:
+                qty = int(min(round(diff * sell_r[tier] / p), shares))
+                shares -= qty
+                cash   += qty * p
+            elif diff < 0:
+                qty = int(min(cash, abs(diff) * buy_r[tier]) / p)
+                shares += qty
+                cash   -= qty * p
+
+        # ── I. 이번 주 신호 계산 (마지막 행) ─────────────────
+        last  = sim.iloc[-1]
+        prev  = sim.iloc[-2]
+
+        last_eval  = float(last['Eval'])
+        last_price = float(last['TQQQ'])
+        prev_price = float(prev['TQQQ'])
+        this_tier  = get_tier(last_eval, hc, lc)
+
+        diff_now   = shares * (last_price - prev_price)
         action, order_qty = "관망", 0
-        
-        if cur_price_diff > 0: # 상승 시 매도 주문
-            action = "매도"
-            order_qty = int(min(round((cur_price_diff * settings['sell_ratios'][this_tier]) / last_row['TQQQ']), shares))
-        elif cur_price_diff < 0: # 하락 시 매수 주문
-            action = "매수"
-            avail_now = max_c - (INITIAL_CAP - cash)
-            order_qty = int(min(cash, abs(cur_price_diff) * settings['buy_ratios'][this_tier], avail_now) / last_row['TQQQ'])
 
-        if order_qty == 0: action = "관망"
+        if diff_now > 0 and shares > 0:     # 상승 → 매도
+            action    = "매도"
+            order_qty = int(min(round(diff_now * sell_r[this_tier] / last_price), shares))
+        elif diff_now < 0:                   # 하락 → 매수
+            action    = "매수"
+            order_qty = int(min(cash, abs(diff_now) * buy_r[this_tier]) / last_price)
 
-        # --- F. 구글 시트 및 텔레그램 업데이트 ---
+        if order_qty == 0:
+            action = "관망"
+
+        # ── J. 현재 자산 계산 ─────────────────────────────────
+        # 이번 주 주문이 체결된다고 가정한 예상 잔고
+        if action == "매도":
+            est_shares = shares - order_qty
+            est_cash   = cash   + order_qty * cur_p
+        elif action == "매수":
+            est_shares = shares + order_qty
+            est_cash   = cash   - order_qty * cur_p
+        else:
+            est_shares, est_cash = shares, cash
+
+        total_asset  = est_cash  + est_shares * cur_p
+        pnl_pct      = (total_asset / INITIAL_CAP - 1) * 100
+        cash_pct     = est_cash / total_asset * 100 if total_asset > 0 else 0
+
+        # ── K. Google Sheets 업데이트 ─────────────────────────
         ws.update_acell('L4', action)
         ws.update_acell('M4', 'LOC' if action != "관망" else "-")
         ws.update_acell('N4', cur_p)
-        ws.update_acell('O4', order_qty) # 현재 보유량이 아닌 '주문량' 기재
-        print(f"📤 업데이트 완료: {action} {order_qty}주 (LOC)")
+        ws.update_acell('O4', order_qty)
+        print(f"📤 시트 업데이트 완료: {action} {order_qty}주 @ ${cur_p} (LOC)")
 
-        total_asset = cash + (shares * cur_p)
+        # ── L. Telegram 메시지 발송 ───────────────────────────
+        tier_emoji = {'HIGH': '🟡', 'MID': '🔵', 'LOW': '🟢'}.get(this_tier, '⚪')
+        action_emoji = {'매도': '📈', '매수': '📉', '관망': '⏸'}.get(action, '⏸')
         today_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-        
-        msg = f"🚀 *[위대리] 주간 매매 시그널* ({today_str})\n\n" \
-              f"💰 *자산 현황*\n" \
-              f"- 예상 총 자산: `${total_asset:,.2f}`\n" \
-              f"- 보유 주식: *{shares}* 주\n" \
-              f"- 보유 현금: `${cash:,.2f}`\n\n" \
-              f"🌡️ *시장 평가*: `{last_eval:.2%}` ({this_tier})\n\n" \
-              f"🎯 *이번 주 주문 (LOC)*\n" \
-              f"- 상태: *{action}*\n" \
-              f"- 주문 수량: *{order_qty}* 주\n" \
-              f"- 현재가 기준: `${cur_p}`\n\n" \
-              f"💡 MTS에서 `{action} {order_qty}주`를 LOC로 예약하세요!"
-        
+
+        msg = (
+            f"🚀 *[위대리] 주간 매매 시그널* ({today_str})\n\n"
+            f"💰 *자산 현황 (주문 체결 후 예상)*\n"
+            f"  총 자산 : `${total_asset:>12,.2f}`  ({pnl_pct:+.2f}%)\n"
+            f"  보유 주식: `{est_shares:>8,}` 주\n"
+            f"  보유 현금: `${est_cash:>12,.2f}`  (현금 {cash_pct:.1f}%)\n\n"
+            f"🌡️ *시장 평가* : {tier_emoji} `{last_eval:.2%}`  ({this_tier})\n"
+            f"  QQQ 추세 대비 {abs(last_eval):.1%} "
+            f"{'고평가' if last_eval >= hc else ('저평가' if last_eval <= lc else '중립')}\n\n"
+            f"🎯 *이번 주 LOC 주문*\n"
+            f"  {action_emoji} 상태    : *{action}*\n"
+            f"  📦 주문 수량: *{order_qty}* 주\n"
+            f"  💲 기준 가격: `${cur_p}`\n\n"
+        )
+
+        if action != "관망":
+            msg += (
+                f"📱 *MTS 실행 방법*\n"
+                f"  → `{action} {order_qty}주` LOC로 예약\n"
+                f"  → 금요일 장 마감 전 체결\n"
+            )
+        else:
+            msg += "  → 이번 주 주문 없음 (관망)\n"
+
+        msg += (
+            f"\n━━━━━━━━━━━━━━\n"
+            f"📊 파라미터 | hc={hc:.0%} / lc={lc:.0%}\n"
+            f"  매도 H/M/L: {sH}/{sM}/{sL}  "
+            f"매수 H/M/L: {bH}/{bM}/{bL}"
+        )
+
         send_telegram(msg)
+        print("✅ Telegram 발송 완료")
 
     except Exception as e:
-        print(f"❌ 오류 발생: {e}")
+        err_msg = f"❌ [위대리 봇] 오류 발생: {e}"
+        print(err_msg)
+        send_telegram(err_msg)
+
 
 if __name__ == "__main__":
     main()
