@@ -154,3 +154,43 @@ else:
         # (v3.1의 연도별 성과 및 백테스트 로직 동일하게 유지)
         st.title("🧪 자유 기간 백테스트")
         # ... (이전 코드의 백테스트 부분 동일하게 삽입) ...
+
+    elif menu == "🧪 자유 백테스트":
+        st.title("🧪 백테스트 리포트")
+        t_start = st.date_input("테스트 시작일", datetime.strptime("2010-01-01", "%Y-%m-%d"))
+        t_end = st.date_input("테스트 종료일", datetime.now())
+        t_cap = st.number_input("테스트 자본 ($)", value=100000)
+        
+        if st.button("백테스트 실행"):
+            log_df, f_cash, f_shares, f_asset, f_mdd = run_enhanced_sim(df, t_start, t_end, t_cap, 0.40, params)
+            
+            if not log_df.empty:
+                # 1. 연도별 성과 계산
+                log_df['Year'] = pd.to_datetime(log_df['날짜']).dt.year
+                yearly_stats = []
+                for year, group in log_df.groupby('Year'):
+                    y_start_asset = group['총자산'].iloc[0]
+                    y_end_asset = group['총자산'].iloc[-1]
+                    y_profit = (y_end_asset / y_start_asset - 1) * 100
+                    # 연도 내 MDD
+                    y_max = group['총자산'].cummax()
+                    y_mdd = ((y_max - group['총자산']) / y_max).max() * 100
+                    yearly_stats.append({'연도': year, '수익률': f"{y_profit:.2f}%", 'MDD': f"-{y_mdd:.2f}%"})
+                
+                st.subheader("📅 연도별 성과 요약 (CAGR/MDD)")
+                st.table(pd.DataFrame(yearly_stats))
+                
+                # 2. 전체 통계
+                total_years = (pd.to_datetime(t_end) - pd.to_datetime(t_start)).days / 365.25
+                cagr = ((f_asset / t_cap) ** (1/total_years) - 1) * 100
+                
+                b1, b2, b3 = st.columns(3)
+                b1.metric("최종 자산", f"${f_asset:,.2f}")
+                b2.metric("CAGR (연평균 수익률)", f"{cagr:.2f}%")
+                b3.metric("최대 낙폭 (MDD)", f"-{f_mdd:.2f}%")
+
+                st.divider()
+                st.subheader("📜 전체 매매 상세 로그")
+                display_log = log_df.drop(columns=['Year']).copy()
+                display_log['총자산'] = display_log['총자산'].map(lambda x: f"${x:,.2f}")
+                st.dataframe(display_log, use_container_width=True)
