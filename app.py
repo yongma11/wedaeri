@@ -7,8 +7,61 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
+import json
+from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
+
+# ─────────────────────────────────────────────────────────────
+# 설정 파일 (앱과 같은 폴더에 wedaeri_config.json 저장)
+# ─────────────────────────────────────────────────────────────
+CONFIG_FILE = Path(__file__).parent / "wedaeri_config.json"
+
+# 앱 최초 실행 시 사용할 기본값
+DEFAULT_CONFIG = {
+    # 사이드바 (실전)
+    'start_date': '2025-12-26',
+    'cap':        108000,
+    'cash':       40,       # 정수 %
+    # 백테스트 전용
+    'bt_cap':     20000,
+    'bt_cash':    40,       # 정수 %
+    # 전략 파라미터 (Tab1·Tab2 공유)
+    'hc':  7.0,   'lc': -7.0,
+    'sH':  1.5,   'sM':  0.6,   'sL': 0.35,
+    'bH':  0.4,   'bM':  0.6,   'bL': 2.0,
+}
+
+def load_config() -> dict:
+    """저장된 JSON 설정 파일 로드 (없으면 기본값 반환)"""
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, encoding='utf-8') as f:
+                saved = json.load(f)
+            return {**DEFAULT_CONFIG, **saved}   # 새 키는 기본값으로 보완
+        except Exception:
+            pass
+    return DEFAULT_CONFIG.copy()
+
+def save_config(ss) -> None:
+    """현재 session_state 값을 JSON 파일에 저장"""
+    cfg = {
+        'start_date': str(ss.get('p_start', DEFAULT_CONFIG['start_date'])),
+        'cap':    int(ss.get('p_cap',     DEFAULT_CONFIG['cap'])),
+        'cash':   int(ss.get('p_cash',    DEFAULT_CONFIG['cash'])),
+        'bt_cap': int(ss.get('p_bt_cap',  DEFAULT_CONFIG['bt_cap'])),
+        'bt_cash':int(ss.get('p_bt_cash', DEFAULT_CONFIG['bt_cash'])),
+        'hc':  float(ss.get('p_hc',  DEFAULT_CONFIG['hc'])),
+        'lc':  float(ss.get('p_lc',  DEFAULT_CONFIG['lc'])),
+        'sH':  float(ss.get('p_sH',  DEFAULT_CONFIG['sH'])),
+        'sM':  float(ss.get('p_sM',  DEFAULT_CONFIG['sM'])),
+        'sL':  float(ss.get('p_sL',  DEFAULT_CONFIG['sL'])),
+        'bH':  float(ss.get('p_bH',  DEFAULT_CONFIG['bH'])),
+        'bM':  float(ss.get('p_bM',  DEFAULT_CONFIG['bM'])),
+        'bL':  float(ss.get('p_bL',  DEFAULT_CONFIG['bL'])),
+    }
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
 
 # ─────────────────────────────────────────────────────────────
 # 1. 페이지 설정 & 스타일
@@ -34,6 +87,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
+# session_state 초기화 (앱 최초 실행 시 JSON → session_state)
+# ─────────────────────────────────────────────────────────────
+if '_cfg_loaded' not in st.session_state:
+    _cfg = load_config()
+    ss   = st.session_state
+    ss['_cfg_loaded'] = True
+    ss['p_start']   = _cfg['start_date']
+    ss['p_cap']     = _cfg['cap']
+    ss['p_cash']    = _cfg['cash']
+    ss['p_bt_cap']  = _cfg['bt_cap']
+    ss['p_bt_cash'] = _cfg['bt_cash']
+    ss['p_hc']      = _cfg['hc']
+    ss['p_lc']      = _cfg['lc']
+    ss['p_sH']      = _cfg['sH']
+    ss['p_sM']      = _cfg['sM']
+    ss['p_sL']      = _cfg['sL']
+    ss['p_bH']      = _cfg['bH']
+    ss['p_bM']      = _cfg['bM']
+    ss['p_bL']      = _cfg['bL']
+
+# ─────────────────────────────────────────────────────────────
 # 차트 공통 레이아웃
 # ─────────────────────────────────────────────────────────────
 CHART_LAYOUT = dict(
@@ -55,32 +129,50 @@ def apply_grid(fig):
 with st.sidebar:
     st.header("⚙️ 위대리 기본 설정")
     with st.container(border=True):
-        st_start      = st.date_input("투자 시작일", datetime.strptime("2025-12-26", "%Y-%m-%d"))
-        st_cap        = st.number_input("시작 원금 ($)", value=108000.00, step=1000.0)
-        st_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100, 40) / 100
-        if st.button("🔄 데이터 갱신", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+        # key= 사용 → 자동으로 session_state['p_*']에 연결
+        st_start = st.date_input(
+            "투자 시작일",
+            value=datetime.strptime(
+                str(st.session_state.get('p_start', '2025-12-26'))[:10], "%Y-%m-%d"),
+            key='p_start'
+        )
+        st_cap = st.number_input(
+            "시작 원금 ($)",
+            value=float(st.session_state.get('p_cap', 108000)),
+            step=1000.0, key='p_cap'
+        )
+        st_cash_ratio = st.slider(
+            "초기 현금 비중 (%)", 0, 100,
+            int(st.session_state.get('p_cash', 40)),
+            key='p_cash'
+        ) / 100
+
+        col_ref, col_save = st.columns(2)
+        with col_ref:
+            if st.button("🔄 데이터 갱신", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
+        with col_save:
+            if st.button("💾 설정 저장", use_container_width=True):
+                save_config(st.session_state)
+                st.toast("✅ 설정이 저장되었습니다!", icon="💾")
 
     st.divider()
-    st.markdown("""
-**📌 현재 파라미터**
+    # 현재 적용 중인 파라미터를 session_state에서 동적으로 표시
+    _p = st.session_state
+    _hc_d = _p.get('p_hc', 7.0); _lc_d = _p.get('p_lc', -7.0)
+    _sH_d = _p.get('p_sH', 1.5); _sM_d = _p.get('p_sM', 0.6); _sL_d = _p.get('p_sL', 0.35)
+    _bH_d = _p.get('p_bH', 0.4); _bM_d = _p.get('p_bM', 0.6); _bL_d = _p.get('p_bL', 2.0)
+    st.markdown(f"""
+**📌 현재 적용 파라미터**
 
-| 티어 | Eval 조건 | 매도× | 매수× |
-|------|----------|-------|-------|
-| HIGH | ≥ +7.0%  | 1.5   | 0.4   |
-| MID  | 중간      | 0.6   | 0.6   |
-| LOW  | ≤ −7%   | 0.35  | 2.0   |
+| 티어 | Eval | 매도× | 매수× |
+|------|------|-------|-------|
+| HIGH | ≥ +{_hc_d:.1f}% | {_sH_d} | {_bH_d} |
+| MID  | 중간 | {_sM_d} | {_bM_d} |
+| LOW  | ≤ {_lc_d:.1f}% | {_sL_d} | {_bL_d} |
 
-**📌 최적화 파라미터**
-
-| 티어 | Eval 조건 | 매도× | 매수× |
-|------|----------|-------|-------|
-| HIGH | ≥ +6.0%  | 2.0   | 1.0   |
-| MID  | 중간      | 0.3   | 0.6   |
-| LOW  | ≤ −6%   | 0.2   | 2.0   |
-
-CAGR ~43%, MDD ~31%
+*(백테스트 탭에서 변경·저장 가능)*
 """)
 
 # ─────────────────────────────────────────────────────────────
@@ -297,13 +389,27 @@ if df.empty:
     st.error("데이터 로드 실패. 잠시 후 새로고침 해주세요.")
     st.stop()
 
-log_df = run_wedaeri_sim(df, st_start, st_cap, st_cash_ratio)
+# 전략 파라미터는 session_state p_* 에서 읽어옴 (Tab2 프리셋 변경 즉시 반영)
+_ss = st.session_state
+log_df = run_wedaeri_sim(
+    df, st_start, st_cap, st_cash_ratio,
+    hc  = _ss.get('p_hc', 7.0)  / 100,
+    lc  = _ss.get('p_lc', -7.0) / 100,
+    sH  = _ss.get('p_sH', 1.5),
+    sM  = _ss.get('p_sM', 0.6),
+    sL  = _ss.get('p_sL', 0.35),
+    bH  = _ss.get('p_bH', 0.4),
+    bM  = _ss.get('p_bM', 0.6),
+    bL  = _ss.get('p_bL', 2.0),
+)
 
 tqqq_series = df['TQQQ'].dropna()
 latest_tqqq = float(tqqq_series.iloc[-1]) if not tqqq_series.empty else 0.0
 eval_series  = df['Eval'].dropna()
 latest_eval  = float(eval_series.iloc[-1]) if not eval_series.empty else 0.0
-latest_tier  = 'HIGH' if latest_eval >= 0.07 else ('LOW' if latest_eval <= -0.07 else 'MID')
+_hc_rt = _ss.get('p_hc', 7.0) / 100
+_lc_rt = _ss.get('p_lc', -7.0) / 100
+latest_tier  = 'HIGH' if latest_eval >= _hc_rt else ('LOW' if latest_eval <= _lc_rt else 'MID')
 
 st.title("🚀 TQQQ [위대리] v4.0 : 균형형 트레이딩 시스템")
 tab1, tab2, tab3 = st.tabs(["🔥 실전 트레이딩", "📊 백테스트 분석", "📘 전략 로직"])
@@ -384,56 +490,74 @@ with tab2:
         key_map = {"📋 현재": "현재", "🏆 최적화": "최적화", "🛡️ 안정형": "안정형"}
         pkey    = next((v for k, v in key_map.items() if k in preset), None)
 
-        # ── 프리셋 선택 시 session_state 강제 갱신 ──────────────
-        # Streamlit은 key 있는 슬라이더의 value= 파라미터를 무시하므로
-        # 직접 session_state를 변경해야 슬라이더 값이 실제로 바뀜
+        # ── 프리셋 선택 시 공유 session_state(p_*) 강제 갱신 ──────
+        # p_* 키는 Tab1 실전 트레이딩에도 그대로 적용됩니다.
         _ss = st.session_state
         if pkey and _ss.get('_last_preset') != pkey:
             _ss['_last_preset'] = pkey
             v = PRESETS[pkey]
-            _ss['bt_hc'] = v['hc'] * 100
-            _ss['bt_lc'] = v['lc'] * 100
-            _ss['bt_sH'] = v['sH']
-            _ss['bt_sM'] = v['sM']
-            _ss['bt_sL'] = v['sL']
-            _ss['bt_bH'] = v['bH']
-            _ss['bt_bM'] = v['bM']
-            _ss['bt_bL'] = v['bL']
+            _ss['p_hc'] = v['hc'] * 100   # 슬라이더는 % 단위
+            _ss['p_lc'] = v['lc'] * 100
+            _ss['p_sH'] = v['sH']
+            _ss['p_sM'] = v['sM']
+            _ss['p_sL'] = v['sL']
+            _ss['p_bH'] = v['bH']
+            _ss['p_bM'] = v['bM']
+            _ss['p_bL'] = v['bL']
 
-        P_DEF = PRESETS[pkey] if pkey else PRESETS["현재"]
+        P_DEF = PRESETS[pkey] if pkey else {
+            'hc': _ss.get('p_hc', 7.0) / 100,
+            'lc': _ss.get('p_lc', -7.0) / 100,
+            'sH': _ss.get('p_sH', 1.5), 'sM': _ss.get('p_sM', 0.6),
+            'sL': _ss.get('p_sL', 0.35),
+            'bH': _ss.get('p_bH', 0.4), 'bM': _ss.get('p_bM', 0.6),
+            'bL': _ss.get('p_bL', 2.0),
+        }
 
         p1, p2, p3 = st.columns(3)
         with p1:
             st.markdown("**기본 설정**")
-            bt_cap        = st.number_input("초기 자본 ($)", value=20_000, step=1000, key='bt_cap')
-            bt_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100, 40, key='bt_cr') / 100
+            bt_cap        = st.number_input("초기 자본 ($)", value=20_000, step=1000, key='p_bt_cap')
+            bt_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100,
+                                      int(_ss.get('p_bt_cash', 40)), key='p_bt_cash') / 100
             st.markdown("**시장 평가 기준**")
+            # p_hc/p_lc 는 % 단위로 저장 → 슬라이더가 그대로 표시
             bt_hc = st.slider("HIGH 기준 Eval ≥ (%)", 1.0, 20.0,
-                               P_DEF['hc']*100, 0.5, key='bt_hc') / 100
+                               float(P_DEF['hc']*100), 0.5, key='p_hc') / 100
             bt_lc = st.slider("LOW 기준  Eval ≤ (%)", -20.0, -1.0,
-                               P_DEF['lc']*100, 0.5, key='bt_lc') / 100
+                               float(P_DEF['lc']*100), 0.5, key='p_lc') / 100
 
         with p2:
             st.markdown("**매도 배율** (상승 시 차익실현 강도)")
-            bt_sH = st.slider("매도 HIGH ×", 0.1, 5.0,  P_DEF['sH'], 0.05, key='bt_sH')
-            bt_sM = st.slider("매도 MID  ×", 0.1, 3.0,  P_DEF['sM'], 0.05, key='bt_sM')
-            bt_sL = st.slider("매도 LOW  ×", 0.05, 2.0, P_DEF['sL'], 0.05, key='bt_sL')
+            bt_sH = st.slider("매도 HIGH ×", 0.1, 5.0,  float(P_DEF['sH']), 0.05, key='p_sH')
+            bt_sM = st.slider("매도 MID  ×", 0.1, 3.0,  float(P_DEF['sM']), 0.05, key='p_sM')
+            bt_sL = st.slider("매도 LOW  ×", 0.05, 2.0, float(P_DEF['sL']), 0.05, key='p_sL')
 
         with p3:
             st.markdown("**매수 배율** (하락 시 추가 매수 강도)")
-            bt_bH = st.slider("매수 HIGH ×", 0.1, 3.0,  P_DEF['bH'], 0.05, key='bt_bH')
-            bt_bM = st.slider("매수 MID  ×", 0.1, 3.0,  P_DEF['bM'], 0.05, key='bt_bM')
-            bt_bL = st.slider("매수 LOW  ×", 0.5, 10.0, P_DEF['bL'], 0.25, key='bt_bL')
+            bt_bH = st.slider("매수 HIGH ×", 0.1, 3.0,  float(P_DEF['bH']), 0.05, key='p_bH')
+            bt_bM = st.slider("매수 MID  ×", 0.1, 3.0,  float(P_DEF['bM']), 0.05, key='p_bM')
+            bt_bL = st.slider("매수 LOW  ×", 0.5, 10.0, float(P_DEF['bL']), 0.25, key='p_bL')
 
-        if pkey:
-            vals = PRESETS[pkey]
-            st.info(
-                f"💡 **{pkey} 프리셋** — "
-                f"hc={vals['hc']:.1%} / lc={vals['lc']:.1%} | "
-                f"매도 {vals['sH']}/{vals['sM']}/{vals['sL']} | "
-                f"매수 {vals['bH']}/{vals['bM']}/{vals['bL']}  "
-                f"→ 슬라이더가 자동 반영됩니다."
-            )
+        # ── 안내 메시지 + 저장 버튼 ───────────────────────────────
+        msg_col, btn_col = st.columns([3, 1])
+        with msg_col:
+            if pkey:
+                vals = PRESETS[pkey]
+                st.info(
+                    f"💡 **{pkey} 프리셋** — "
+                    f"hc={vals['hc']:.1%} / lc={vals['lc']:.1%} | "
+                    f"매도 {vals['sH']}/{vals['sM']}/{vals['sL']} | "
+                    f"매수 {vals['bH']}/{vals['bM']}/{vals['bL']}  "
+                    f"→ 슬라이더·실전 탭 모두 자동 반영됩니다."
+                )
+            else:
+                st.info("💡 슬라이더를 조정하면 **실전 트레이딩 탭**에도 즉시 반영됩니다.")
+        with btn_col:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("💾 파라미터 저장", use_container_width=True):
+                save_config(st.session_state)
+                st.toast("✅ 파라미터가 저장되었습니다! 다음 실행 시에도 유지됩니다.", icon="💾")
 
     # ── 백테스트 실행 ─────────────────────────────────────────
     with st.spinner("🔄 백테스트 계산 중..."):
