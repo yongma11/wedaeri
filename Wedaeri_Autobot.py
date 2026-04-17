@@ -104,7 +104,62 @@ def send_telegram(text: str) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
-# 3. 티어 판정 (3-tier)
+# 3. Google Sheets '설정' 시트에서 파라미터 로드
+# ─────────────────────────────────────────────────────────────
+def load_config_from_sheets(sh) -> dict:
+    """앱이 저장한 '설정' 시트를 읽어 파라미터 딕셔너리를 반환합니다.
+    시트가 없거나 읽기 실패 시 빈 딕셔너리를 반환 (기본값 유지).
+    """
+    try:
+        ws = sh.worksheet("설정")
+        records = ws.get_all_records()          # [{'key':..., 'value':...}, ...]
+        return {row['key']: row['value'] for row in records if row.get('key')}
+    except Exception as e:
+        print(f"⚠️ 설정 시트 로드 실패 (기본값 사용): {e}")
+        return {}
+
+
+def apply_sheets_config(cfg: dict,
+                        start_date: str, initial_cap: float,
+                        init_cash_pct: float, params: dict):
+    """Sheets에서 읽은 설정을 실제 변수에 반영합니다.
+    변경된 항목을 출력하고 (start_date, initial_cap, init_cash_pct, params) 튜플로 반환.
+    """
+    if not cfg:
+        return start_date, initial_cap, init_cash_pct, params
+
+    def _f(key, default):
+        try:
+            return float(cfg[key])
+        except (KeyError, ValueError, TypeError):
+            return default
+
+    new_start       = str(cfg.get('start_date', start_date))[:10]
+    new_cap         = _f('cap',  initial_cap)
+    new_cash_pct    = _f('cash', init_cash_pct * 100) / 100   # 저장 단위: % 정수
+
+    new_params = {
+        'hc': _f('hc', params['hc'] * 100) / 100,
+        'lc': _f('lc', params['lc'] * 100) / 100,
+        'sH': _f('sH', params['sH']),
+        'sM': _f('sM', params['sM']),
+        'sL': _f('sL', params['sL']),
+        'bH': _f('bH', params['bH']),
+        'bM': _f('bM', params['bM']),
+        'bL': _f('bL', params['bL']),
+    }
+
+    print(f"📋 Sheets 설정 로드 완료")
+    print(f"   시작일: {new_start} | 원금: ${new_cap:,.0f} | 초기현금: {new_cash_pct:.0%}")
+    print(f"   hc={new_params['hc']:.0%} / lc={new_params['lc']:.0%}")
+    print(f"   매도 H/M/L: {new_params['sH']}/{new_params['sM']}/{new_params['sL']}")
+    print(f"   매수 H/M/L: {new_params['bH']}/{new_params['bM']}/{new_params['bL']}")
+
+    return new_start, new_cap, new_cash_pct, new_params
+
+
+# ─────────────────────────────────────────────────────────────
+# 4. 티어 판정 (3-tier)
 # ─────────────────────────────────────────────────────────────
 def get_tier(eval_val: float, hc: float, lc: float) -> str:
     if eval_val >= hc:
@@ -136,6 +191,16 @@ def main():
     except Exception as e:
         print(f"❌ 시트 연결 실패: {e}")
         return
+
+    # ── A-2. '설정' 시트에서 앱 저장값 로드 (있으면 하드코딩 기본값을 덮어씀) ──
+    _cfg = load_config_from_sheets(sh)
+    start_date, initial_cap, init_cash_pct, params = apply_sheets_config(
+        _cfg,
+        start_date    = START_DATE,
+        initial_cap   = INITIAL_CAP,
+        init_cash_pct = INIT_CASH_PCT,
+        params        = dict(PARAMS),   # 복사본 사용 (전역 PARAMS 불변 유지)
+    )
 
     try:
         # ── B. 일별 데이터 수집 (2010년 기준 — Expanding OLS 시작점) ──
@@ -189,7 +254,9 @@ def main():
         weekly = qqq_weekly.merge(tqqq_weekly, on='Date', how='inner')
 
         # ── F. 시작일부터 시뮬레이션 데이터 필터 ─────────────
-        sim = (weekly[weekly['Date'] >= pd.to_datetime(START_DATE)]
+        # start_date / initial_cap / init_cash_pct / params 는
+        # A-2 단계에서 Sheets 설정이 이미 반영된 로컬 변수
+        sim = (weekly[weekly['Date'] >= pd.to_datetime(start_date)]
                .dropna(subset=['Eval', 'TQQQ'])
                .reset_index(drop=True))
 
@@ -199,14 +266,14 @@ def main():
             return
 
         # ── G. 초기 잔고 설정 ─────────────────────────────────
-        init_stock_ratio = 1.0 - INIT_CASH_PCT
+        init_stock_ratio = 1.0 - init_cash_pct
         init_price       = float(sim.loc[0, 'TQQQ'])
-        shares           = int((INITIAL_CAP * init_stock_ratio) / init_price)
-        cash             = INITIAL_CAP - (shares * init_price)
+        shares           = int((initial_cap * init_stock_ratio) / init_price)
+        cash             = initial_cap - (shares * init_price)
 
-        hc = PARAMS['hc']; lc = PARAMS['lc']
-        sH = PARAMS['sH']; sM = PARAMS['sM']; sL = PARAMS['sL']
-        bH = PARAMS['bH']; bM = PARAMS['bM']; bL = PARAMS['bL']
+        hc = params['hc']; lc = params['lc']
+        sH = params['sH']; sM = params['sM']; sL = params['sL']
+        bH = params['bH']; bM = params['bM']; bL = params['bL']
 
         sell_r = {'HIGH': sH, 'MID': sM, 'LOW': sL}
         buy_r  = {'HIGH': bH, 'MID': bM, 'LOW': bL}
