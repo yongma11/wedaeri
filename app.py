@@ -45,8 +45,11 @@ def load_config() -> dict:
 
 def save_config(ss) -> None:
     """현재 session_state 값을 JSON 파일에 저장"""
+    # p_start 는 date 객체일 수도 있고 문자열일 수도 있음 → 항상 문자열로 변환
+    raw_start = ss.get('p_start', DEFAULT_CONFIG['start_date'])
+    start_str = raw_start.strftime("%Y-%m-%d") if hasattr(raw_start, 'strftime') else str(raw_start)[:10]
     cfg = {
-        'start_date': str(ss.get('p_start', DEFAULT_CONFIG['start_date'])),
+        'start_date': start_str,
         'cap':    int(ss.get('p_cap',     DEFAULT_CONFIG['cap'])),
         'cash':   int(ss.get('p_cash',    DEFAULT_CONFIG['cash'])),
         'bt_cap': int(ss.get('p_bt_cap',  DEFAULT_CONFIG['bt_cap'])),
@@ -93,7 +96,8 @@ if '_cfg_loaded' not in st.session_state:
     _cfg = load_config()
     ss   = st.session_state
     ss['_cfg_loaded'] = True
-    ss['p_start']   = _cfg['start_date']
+    # date_input 은 date 객체를 요구 — 문자열로 저장된 값을 변환
+    ss['p_start']   = datetime.strptime(str(_cfg['start_date'])[:10], "%Y-%m-%d").date()
     ss['p_cap']     = _cfg['cap']
     ss['p_cash']    = _cfg['cash']
     ss['p_bt_cap']  = _cfg['bt_cap']
@@ -129,23 +133,11 @@ def apply_grid(fig):
 with st.sidebar:
     st.header("⚙️ 위대리 기본 설정")
     with st.container(border=True):
-        # key= 사용 → 자동으로 session_state['p_*']에 연결
-        st_start = st.date_input(
-            "투자 시작일",
-            value=datetime.strptime(
-                str(st.session_state.get('p_start', '2025-12-26'))[:10], "%Y-%m-%d"),
-            key='p_start'
-        )
-        st_cap = st.number_input(
-            "시작 원금 ($)",
-            value=float(st.session_state.get('p_cap', 108000)),
-            step=1000.0, key='p_cap'
-        )
-        st_cash_ratio = st.slider(
-            "초기 현금 비중 (%)", 0, 100,
-            int(st.session_state.get('p_cash', 40)),
-            key='p_cash'
-        ) / 100
+        # key= 사용 → session_state['p_*'] 와 자동 연결
+        # value= 는 key 가 이미 session_state 에 있으면 무시되므로 생략
+        st_start      = st.date_input("투자 시작일", key='p_start')
+        st_cap        = st.number_input("시작 원금 ($)", step=1000.0, key='p_cap')
+        st_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100, key='p_cash') / 100
 
         col_ref, col_save = st.columns(2)
         with col_ref:
