@@ -8,14 +8,18 @@ import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import warnings
 warnings.filterwarnings('ignore')
 
 # ─────────────────────────────────────────────────────────────
-# 설정 파일 (앱과 같은 폴더에 wedaeri_config.json 저장)
+# 설정 파일 & Google Sheets 연동
 # ─────────────────────────────────────────────────────────────
 CONFIG_FILE = Path(__file__).parent / "wedaeri_config.json"
+
+# 봇과 동일한 시트 키 (bot.py의 SHEET_KEY와 일치시켜야 함)
+SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
 
 # 앱 최초 실행 시 사용할 기본값
 DEFAULT_CONFIG = {
@@ -69,6 +73,64 @@ def save_config(ss) -> None:
     }
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+    return cfg   # 호출자가 Sheets 동기화에 재사용
+
+
+def _get_gcp_creds_raw() -> str | None:
+    """Streamlit Secrets 또는 환경변수에서 GCP 인증 JSON 문자열을 반환합니다."""
+    # 1순위: Streamlit Secrets (Streamlit Cloud 배포 환경)
+    try:
+        raw = st.secrets.get("GCP_CREDENTIALS")
+        if raw:
+            return raw if isinstance(raw, str) else json.dumps(dict(raw))
+    except Exception:
+        pass
+    # 2순위: 환경변수 (로컬/서버 실행 환경)
+    return os.environ.get("GCP_CREDENTIALS")
+
+
+@st.cache_resource(show_spinner=False)
+def _get_gspread_client():
+    """gspread 클라이언트를 캐시해서 반환합니다. 인증 실패 시 None 반환."""
+    try:
+        import gspread
+        raw = _get_gcp_creds_raw()
+        if not raw:
+            return None
+        creds = json.loads(raw) if isinstance(raw, str) else raw
+        if 'private_key' in creds:
+            creds['private_key'] = creds['private_key'].replace('\\n', '\n')
+        return gspread.service_account_from_dict(creds)
+    except Exception:
+        return None
+
+
+def save_config_to_sheets(cfg: dict) -> bool:
+    """설정 딕셔너리를 Google Sheets '설정' 시트에 저장합니다.
+    봇이 이 시트를 읽어 파라미터를 자동 반영합니다.
+    Returns: 성공 여부
+    """
+    try:
+        gc = _get_gspread_client()
+        if gc is None:
+            return False
+        sh = gc.open_by_key(SHEET_KEY)
+        try:
+            ws = sh.worksheet("설정")
+        except Exception:
+            ws = sh.add_worksheet(title="설정", rows=30, cols=2)
+
+        # key-value 행 목록 구성 (헤더 포함)
+        rows = [['key', 'value']]
+        for k, v in cfg.items():
+            rows.append([k, str(v)])
+
+        ws.clear()
+        ws.update('A1', rows)
+        return True
+    except Exception:
+        return False
+
 
 # ─────────────────────────────────────────────────────────────
 # 1. 페이지 설정 & 스타일
@@ -151,8 +213,10 @@ with st.sidebar:
                 st.rerun()
         with col_save:
             if st.button("💾 설정 저장", use_container_width=True):
-                save_config(st.session_state)
-                st.toast("✅ 설정이 저장되었습니다!", icon="💾")
+                cfg = save_config(st.session_state)
+                synced = save_config_to_sheets(cfg)
+                msg = "✅ 저장 완료 + Sheets 동기화!" if synced else "✅ 저장 완료 (로컬)"
+                st.toast(msg, icon="💾")
 
     st.divider()
     # 현재 적용 중인 파라미터를 session_state에서 동적으로 표시
@@ -635,8 +699,10 @@ with tab2:
         with btn_col:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("💾 파라미터 저장", use_container_width=True):
-                save_config(st.session_state)
-                st.toast("✅ 파라미터가 저장되었습니다! 다음 실행 시에도 유지됩니다.", icon="💾")
+                cfg = save_config(st.session_state)
+                synced = save_config_to_sheets(cfg)
+                msg = "✅ 저장 완료 + Sheets 동기화! 봇에도 자동 반영됩니다." if synced else "✅ 저장 완료 (로컬 JSON)"
+                st.toast(msg, icon="💾")
 
     # ── 백테스트 실행 ─────────────────────────────────────────
     with st.spinner("🔄 백테스트 계산 중..."):
