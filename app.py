@@ -76,7 +76,7 @@ def save_config(ss) -> None:
     return cfg   # 호출자가 Sheets 동기화에 재사용
 
 
-def _get_gcp_creds_raw() -> str | None:
+def _get_gcp_creds_raw():
     """Streamlit Secrets 또는 환경변수에서 GCP 인증 JSON 문자열을 반환합니다."""
     # 1순위: Streamlit Secrets (Streamlit Cloud 배포 환경)
     try:
@@ -91,45 +91,52 @@ def _get_gcp_creds_raw() -> str | None:
 
 @st.cache_resource(show_spinner=False)
 def _get_gspread_client():
-    """gspread 클라이언트를 캐시해서 반환합니다. 인증 실패 시 None 반환."""
+    """gspread 클라이언트를 캐시해서 반환합니다. 실패 시 (None, 에러메시지) 반환."""
     try:
         import gspread
         raw = _get_gcp_creds_raw()
         if not raw:
-            return None
+            return None, "GCP_CREDENTIALS가 Streamlit Secrets에 없습니다"
         creds = json.loads(raw) if isinstance(raw, str) else raw
         if 'private_key' in creds:
             creds['private_key'] = creds['private_key'].replace('\\n', '\n')
-        return gspread.service_account_from_dict(creds)
-    except Exception:
-        return None
+        gc = gspread.service_account_from_dict(creds)
+        return gc, None
+    except Exception as e:
+        return None, str(e)
 
 
-def save_config_to_sheets(cfg: dict) -> bool:
+def _sheets_write(ws, rows: list) -> None:
+    """gspread 버전 호환: 5.x는 update(range, values), 6.x는 update(values, range)."""
+    try:
+        ws.update('A1', rows)            # gspread 5.x / 일부 6.x
+    except TypeError:
+        ws.update(rows, 'A1')            # gspread 6.x 신버전
+
+
+def save_config_to_sheets(cfg: dict) -> tuple[bool, str]:
     """설정 딕셔너리를 Google Sheets '설정' 시트에 저장합니다.
-    봇이 이 시트를 읽어 파라미터를 자동 반영합니다.
-    Returns: 성공 여부
+    Returns: (성공 여부, 에러 메시지)
     """
     try:
-        gc = _get_gspread_client()
+        gc, err = _get_gspread_client()
         if gc is None:
-            return False
+            return False, err or "인증 실패"
         sh = gc.open_by_key(SHEET_KEY)
         try:
             ws = sh.worksheet("설정")
         except Exception:
             ws = sh.add_worksheet(title="설정", rows=30, cols=2)
 
-        # key-value 행 목록 구성 (헤더 포함)
         rows = [['key', 'value']]
         for k, v in cfg.items():
             rows.append([k, str(v)])
 
         ws.clear()
-        ws.update('A1', rows)
-        return True
-    except Exception:
-        return False
+        _sheets_write(ws, rows)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -214,9 +221,20 @@ with st.sidebar:
         with col_save:
             if st.button("💾 설정 저장", use_container_width=True):
                 cfg = save_config(st.session_state)
-                synced = save_config_to_sheets(cfg)
-                msg = "✅ 저장 완료 + Sheets 동기화!" if synced else "✅ 저장 완료 (로컬)"
-                st.toast(msg, icon="💾")
+                ok, err = save_config_to_sheets(cfg)
+                if ok:
+                    st.toast("✅ 저장 + Sheets 동기화 완료! 봇에 자동 반영됩니다.", icon="💾")
+                else:
+                    st.toast("✅ 로컬 저장 완료", icon="💾")
+                    st.warning(f"⚠️ Sheets 동기화 실패: {err}\n\nStreamlit Secrets에 GCP_CREDENTIALS를 추가해야 봇과 연동됩니다.", icon="🔴")
+
+    st.divider()
+    # ── Sheets 연결 상태 표시 ─────────────────────────────────
+    _gc, _gc_err = _get_gspread_client()
+    if _gc:
+        st.success("🔗 Sheets 동기화 활성화", icon="✅")
+    else:
+        st.error("🔴 Sheets 미연결 — 봇 자동 반영 불가\n\nStreamlit Secrets에 GCP_CREDENTIALS 추가 필요", icon="🔴")
 
     st.divider()
     # 현재 적용 중인 파라미터를 session_state에서 동적으로 표시
@@ -700,9 +718,12 @@ with tab2:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("💾 파라미터 저장", use_container_width=True):
                 cfg = save_config(st.session_state)
-                synced = save_config_to_sheets(cfg)
-                msg = "✅ 저장 완료 + Sheets 동기화! 봇에도 자동 반영됩니다." if synced else "✅ 저장 완료 (로컬 JSON)"
-                st.toast(msg, icon="💾")
+                ok, err = save_config_to_sheets(cfg)
+                if ok:
+                    st.toast("✅ 저장 + Sheets 동기화 완료! 봇에 자동 반영됩니다.", icon="💾")
+                else:
+                    st.toast("✅ 로컬 저장 완료", icon="💾")
+                    st.error(f"⚠️ Sheets 동기화 실패: {err}", icon="🔴")
 
     # ── 백테스트 실행 ─────────────────────────────────────────
     with st.spinner("🔄 백테스트 계산 중..."):
