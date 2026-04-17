@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     # 백테스트 전용
     'bt_cap':     20000,
     'bt_cash':    40,       # 정수 %
+    'bt_start':   '2010-01-01',  # 백테스트 시작일
     # 전략 파라미터 (Tab1·Tab2 공유)
     'hc':  7.0,   'lc': -7.0,
     'sH':  1.5,   'sM':  0.6,   'sL': 0.35,
@@ -48,12 +49,15 @@ def save_config(ss) -> None:
     # p_start 는 date 객체일 수도 있고 문자열일 수도 있음 → 항상 문자열로 변환
     raw_start = ss.get('p_start', DEFAULT_CONFIG['start_date'])
     start_str = raw_start.strftime("%Y-%m-%d") if hasattr(raw_start, 'strftime') else str(raw_start)[:10]
+    raw_bt_start = ss.get('p_bt_start', DEFAULT_CONFIG['bt_start'])
+    bt_start_str = raw_bt_start.strftime("%Y-%m-%d") if hasattr(raw_bt_start, 'strftime') else str(raw_bt_start)[:10]
     cfg = {
         'start_date': start_str,
-        'cap':    int(ss.get('p_cap',     DEFAULT_CONFIG['cap'])),
-        'cash':   int(ss.get('p_cash',    DEFAULT_CONFIG['cash'])),
-        'bt_cap': int(ss.get('p_bt_cap',  DEFAULT_CONFIG['bt_cap'])),
-        'bt_cash':int(ss.get('p_bt_cash', DEFAULT_CONFIG['bt_cash'])),
+        'cap':     int(ss.get('p_cap',      DEFAULT_CONFIG['cap'])),
+        'cash':    int(ss.get('p_cash',     DEFAULT_CONFIG['cash'])),
+        'bt_cap':  int(ss.get('p_bt_cap',   DEFAULT_CONFIG['bt_cap'])),
+        'bt_cash': int(ss.get('p_bt_cash',  DEFAULT_CONFIG['bt_cash'])),
+        'bt_start': bt_start_str,
         'hc':  float(ss.get('p_hc',  DEFAULT_CONFIG['hc'])),
         'lc':  float(ss.get('p_lc',  DEFAULT_CONFIG['lc'])),
         'sH':  float(ss.get('p_sH',  DEFAULT_CONFIG['sH'])),
@@ -97,11 +101,12 @@ if '_cfg_loaded' not in st.session_state:
     ss   = st.session_state
     ss['_cfg_loaded'] = True
     # date_input 은 date 객체를 요구 — 문자열로 저장된 값을 변환
-    ss['p_start']   = datetime.strptime(str(_cfg['start_date'])[:10], "%Y-%m-%d").date()
-    ss['p_cap']     = _cfg['cap']
-    ss['p_cash']    = _cfg['cash']
-    ss['p_bt_cap']  = _cfg['bt_cap']
-    ss['p_bt_cash'] = _cfg['bt_cash']
+    ss['p_start']    = datetime.strptime(str(_cfg['start_date'])[:10], "%Y-%m-%d").date()
+    ss['p_cap']      = _cfg['cap']
+    ss['p_cash']     = _cfg['cash']
+    ss['p_bt_cap']   = _cfg['bt_cap']
+    ss['p_bt_cash']  = _cfg['bt_cash']
+    ss['p_bt_start'] = datetime.strptime(str(_cfg.get('bt_start', '2010-01-01'))[:10], "%Y-%m-%d").date()
     ss['p_hc']      = _cfg['hc']
     ss['p_lc']      = _cfg['lc']
     ss['p_sH']      = _cfg['sH']
@@ -248,6 +253,53 @@ def load_wedaeri_data():
 
 
 # ─────────────────────────────────────────────────────────────
+# 3-b. 실시간 종가 주입 (캐시 밖 — 장 마감 후 즉시 반영)
+# ─────────────────────────────────────────────────────────────
+def inject_live_price(df: pd.DataFrame) -> pd.DataFrame:
+    """장 마감 후 최신 종가를 df에 주입합니다.
+    - 오늘(또는 가장 최근 거래일)의 TQQQ/QQQ 실시간 가격을 df 마지막 행에 반영
+    - Eval이 없으면 직전 주의 Eval을 재사용 (OLS는 주 단위로 거의 안 변함)
+    - 토요일 아침처럼 캐시가 금요일 장 마감 전 데이터인 경우를 커버
+    """
+    try:
+        live_tqqq = float(yf.Ticker("TQQQ").fast_info['last_price'])
+        live_qqq  = float(yf.Ticker("QQQ").fast_info['last_price'])
+
+        today = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
+        # 주말이면 직전 금요일을 타겟 날짜로 사용
+        wd = today.weekday()
+        if wd == 5:    # 토요일
+            target = today - pd.Timedelta(days=1)
+        elif wd == 6:  # 일요일
+            target = today - pd.Timedelta(days=2)
+        else:
+            target = today
+
+        last_df_date = df['Date'].iloc[-1]
+
+        if target > last_df_date:
+            # 타겟 날짜가 df에 없음 → 새 행 추가 (Eval은 직전 값 재사용)
+            last_eval   = float(df['Eval'].dropna().iloc[-1])
+            last_growth = float(df['Growth'].dropna().iloc[-1])
+            new_row = pd.DataFrame({
+                'Date': [target], 'TQQQ': [live_tqqq], 'QQQ': [live_qqq],
+                'Eval': [last_eval], 'Growth': [last_growth]
+            })
+            df = pd.concat([df, new_row], ignore_index=True).reset_index(drop=True)
+        else:
+            # 마지막 행 가격만 업데이트 (Eval은 이미 계산되어 있음)
+            df.loc[df.index[-1], 'TQQQ'] = live_tqqq
+            df.loc[df.index[-1], 'QQQ']  = live_qqq
+            # Eval이 NaN이면 직전 값으로 채움
+            if pd.isna(df.loc[df.index[-1], 'Eval']):
+                df.loc[df.index[-1], 'Eval']   = float(df['Eval'].dropna().iloc[-2])
+                df.loc[df.index[-1], 'Growth'] = float(df['Growth'].dropna().iloc[-2])
+    except Exception:
+        pass
+    return df
+
+
+# ─────────────────────────────────────────────────────────────
 # 4. 실전 시뮬레이션 (Tab 1용 — 지정 시작일부터)
 # ─────────────────────────────────────────────────────────────
 def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
@@ -310,12 +362,16 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
 def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
                       hc=0.07, lc=-0.07,
                       sH=1.5,  sM=0.6,  sL=0.35,
-                      bH=0.4,  bM=0.6,  bL=2.0):
+                      bH=0.4,  bM=0.6,  bL=2.0,
+                      start_date=None):
     # resample('W-FRI').last() : 금요일 휴장 주는 그 주 마지막 거래일 자동 사용
     wkly = (data.set_index('Date')[['TQQQ', 'Eval']]
                 .resample('W-FRI').last()
                 .dropna()
                 .reset_index())
+    # 백테스트 시작일 필터
+    if start_date is not None:
+        wkly = wkly[wkly['Date'] >= pd.to_datetime(start_date)].reset_index(drop=True)
     if wkly.empty:
         return None
 
@@ -323,7 +379,9 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
     EV    = wkly['Eval'].values.astype(float)
     dates = wkly['Date'].values
     N     = len(wkly)
-    YEARS = N / 52
+    # 실제 날짜 기반 연수 계산 (시작일 변경 시 정확성 향상)
+    span_days = (pd.to_datetime(dates[-1]) - pd.to_datetime(dates[0])).days
+    YEARS = max(span_days / 365.25, N / 52)
 
     cash   = init_cap * cash_ratio
     shares = int((init_cap * (1 - cash_ratio)) / P[0])
@@ -359,6 +417,27 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
     cal   = cagr / abs(mdd) if mdd != 0 else 0
 
     bh_peak = np.maximum.accumulate(P)
+
+    # ── 연도별 성과 계산 ──────────────────────────────────────
+    yearly_df = pd.DataFrame({'date': pd.to_datetime(dates), 'eq': eq})
+    yearly_df['year'] = yearly_df['date'].dt.year
+    yearly_rows = []
+    prev_end = init_cap
+    for yr, grp in yearly_df.groupby('year'):
+        start_eq = prev_end
+        end_eq   = float(grp['eq'].iloc[-1])
+        ret_pct  = (end_eq / start_eq - 1) * 100 if start_eq > 0 else 0
+        # 연 내 peak-to-trough MDD
+        yr_peak = np.maximum.accumulate(grp['eq'].values)
+        yr_mdd  = float((grp['eq'].values / yr_peak - 1).min()) * 100
+        yearly_rows.append({
+            '연도': int(yr),
+            '수익률': f"{ret_pct:+.1f}%",
+            '연간 MDD': f"{yr_mdd:.1f}%",
+            '기말 자산': f"${end_eq:,.0f}",
+        })
+        prev_end = end_eq
+
     return {
         'cagr': cagr,  'mdd': mdd,   'cal': cal,  'sor': sor,
         'final': eq[-1], 'init': init_cap, 'years': YEARS,
@@ -368,6 +447,7 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
         'bh_cagr': (P[-1] / P[0]) ** (1 / YEARS) - 1,
         'bh_mdd':  (P / bh_peak - 1).min(),
         'rets': rets,
+        'yearly': yearly_rows,
     }
 
 
@@ -376,6 +456,10 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
 # ─────────────────────────────────────────────────────────────
 with st.spinner("📡 데이터 로딩 중 (최초 1회만 시간이 걸립니다)..."):
     df = load_wedaeri_data()
+
+# 장 마감 후 최신 종가 주입 — 캐시와 무관하게 항상 실행
+# 토요일 아침: 금요일 종가가 캐시에 없어도 즉시 반영
+df = inject_live_price(df)
 
 if df.empty:
     st.error("데이터 로드 실패. 잠시 후 새로고침 해주세요.")
@@ -509,6 +593,7 @@ with tab2:
         p1, p2, p3 = st.columns(3)
         with p1:
             st.markdown("**기본 설정**")
+            bt_start_date = st.date_input("백테스트 시작일", key='p_bt_start')
             bt_cap        = st.number_input("초기 자본 ($)", value=20_000, step=1000, key='p_bt_cap')
             bt_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100,
                                       int(_ss.get('p_bt_cash', 40)), key='p_bt_cash') / 100
@@ -558,12 +643,14 @@ with tab2:
             hc=bt_hc, lc=bt_lc,
             sH=bt_sH, sM=bt_sM, sL=bt_sL,
             bH=bt_bH, bM=bt_bM, bL=bt_bL,
+            start_date=bt_start_date,
         )
         bt_opt = run_full_backtest(
             df, bt_cap, bt_cash_ratio,
             hc=0.06, lc=-0.06,
             sH=2.0, sM=0.3, sL=0.2,
             bH=1.0, bM=0.6, bL=2.0,
+            start_date=bt_start_date,
         )
 
     if bt_cur is None:
@@ -755,6 +842,45 @@ with tab2:
 
     if tier_rows:
         st.dataframe(pd.DataFrame(tier_rows), use_container_width=True, hide_index=True)
+
+    # ── 연도별 상세 성과 ──────────────────────────────────────
+    st.markdown("### 📅 연도별 상세 성과")
+    if bt_cur.get('yearly'):
+        yr_df = pd.DataFrame(bt_cur['yearly'])
+        # 수익률에 따라 행 색상 (양수=초록, 음수=빨강)
+        def color_ret(val):
+            try:
+                v = float(val.replace('%', '').replace('+', ''))
+                color = '#22c55e' if v >= 0 else '#f87171'
+            except Exception:
+                color = ''
+            return f'color: {color}; font-weight: bold'
+
+        styled = yr_df.style.applymap(color_ret, subset=['수익률'])
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        # 연도별 수익률 막대 차트
+        yr_vals = [float(r['수익률'].replace('%', '').replace('+', '')) for r in bt_cur['yearly']]
+        yr_labels = [str(r['연도']) for r in bt_cur['yearly']]
+        colors = ['#4ade80' if v >= 0 else '#f87171' for v in yr_vals]
+
+        fig_yr = go.Figure()
+        fig_yr.add_trace(go.Bar(
+            x=yr_labels, y=yr_vals,
+            marker_color=colors,
+            name='연간 수익률',
+            text=[f"{v:+.1f}%" for v in yr_vals],
+            textposition='outside',
+            textfont=dict(size=10, color='#cbd5e1'),
+        ))
+        fig_yr.add_hline(y=0, line_color='#475569', line_width=1)
+        fig_yr.update_layout(
+            title='연도별 수익률 (%)',
+            yaxis_title='수익률 (%)',
+            height=280, showlegend=False, **CHART_LAYOUT
+        )
+        apply_grid(fig_yr)
+        st.plotly_chart(fig_yr, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════
