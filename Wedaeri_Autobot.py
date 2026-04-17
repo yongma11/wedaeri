@@ -287,9 +287,10 @@ def main():
             f"  QQQ 추세 대비 {abs(last_eval):.1%} "
             f"{'고평가' if last_eval >= hc else ('저평가' if last_eval <= lc else '중립')}\n\n"
             f"🎯 *이번 주 LOC 주문*\n"
-            f"  {action_emoji} 상태    : *{action}*\n"
-            f"  📦 주문 수량: *{order_qty}* 주\n"
-            f"  💲 기준 가격: `${cur_p}`\n\n"
+            f"  {action_emoji} 상태       : *{action}*\n"
+            f"  📦 주문 수량   : *{order_qty}* 주\n"
+            f"  💲 기준 가격   : `${cur_p}`\n"
+            f"  📊 거래 후 잔고: *{est_shares:,}* 주\n\n"
         )
 
         if action != "관망":
@@ -300,13 +301,6 @@ def main():
             )
         else:
             msg += "  → 이번 주 주문 없음 (관망)\n"
-
-        msg += (
-            f"\n━━━━━━━━━━━━━━\n"
-            f"📊 파라미터 | hc={hc:.0%} / lc={lc:.0%}\n"
-            f"  매도 H/M/L: {sH}/{sM}/{sL}  "
-            f"매수 H/M/L: {bH}/{bM}/{bL}"
-        )
 
         send_telegram(msg)
         print("✅ Telegram 발송 완료")
