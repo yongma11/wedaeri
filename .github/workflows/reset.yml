@@ -1,0 +1,13 @@
+name: Wedaeri Reset
+on:
+  schedule:
+    - cron: '0 3 * * 6' # UTC 03:00 = 한국시간 토요일 12:00
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run Reset Script
+        env:
+          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: python wedaeri_reset.py
