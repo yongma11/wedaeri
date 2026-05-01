@@ -37,8 +37,8 @@ PARAMS = {
 }
 
 # Telegram
-BOT_TOKEN = "7524501477:AAEJu3xmHi2Mjxb86ARc6KtMfBh9H9pRZIM"
-CHAT_ID   = "1442265681"
+BOT_TOKEN = os.environ.get('7524501477:AAGyU6_17S5dOzOqYfop6bZrWM3_yOcyW4o', '')
+CHAT_ID   = os.environ.get('1442265681', '')
 
 
 # ─────────────────────────────────────────────────────────────
@@ -92,6 +92,9 @@ def compute_expanding_ols(qqq_weekly: pd.DataFrame, W: int = 260) -> np.ndarray:
 # 2. Telegram 발송
 # ─────────────────────────────────────────────────────────────
 def send_telegram(text: str) -> None:
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram BOT_TOKEN/CHAT_ID 미설정 — 발송 스킵")
+        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, json={
