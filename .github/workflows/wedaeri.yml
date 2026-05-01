@@ -18,7 +18,7 @@ jobs:
 
       # 2. 파이썬 환경 설정 (최신 안정 버전 3.11 사용)
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
           cache: 'pip'   # pip 의존성 캐싱 → 빌드 속도 향상
