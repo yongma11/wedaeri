@@ -1,13 +1,12 @@
-name: Wedaeri Reset
-on:
-  schedule:
-    - cron: '0 3 * * 6' # UTC 03:00 = 한국시간 토요일 12:00
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Run Reset Script
-        env:
-          GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        run: python wedaeri_reset.py
++ on에 workflow_dispatch 추가 (수동 실행 가능)
+
+- uses: actions/checkout@v2
++ uses: actions/checkout@v5
+
++ Set up Python step 추가 (setup-python@v6 + pip 캐시)
++ Install dependencies step 추가 (requirements.txt 사용)
+
+  env:
+    GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
++   BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}     # 텔레그램 알림 보낸다면 필요
++   CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
