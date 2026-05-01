@@ -1,0 +1,13 @@
+# GCP credentials — never commit
+*.json
+!package.json
+!requirements.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment
+.env
+.env.local
