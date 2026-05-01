@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -24,9 +23,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Debug secrets
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "BOT_TOKEN length: ${#BOT_TOKEN}"
+          echo "CHAT_ID length: ${#CHAT_ID}"
+
       - name: Run Wedaeri Autobot
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-          BOT_TOKEN:       ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          CHAT_ID:         ${{ secrets.TELEGRAM_CHAT_ID }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python Wedaeri_Autobot.py
