@@ -2,16 +2,25 @@ import gspread
 import os
 import json
 import requests
-import schedule
-import time
 from datetime import datetime
 
+# ─────────────────────────────────────────────────────────────
 # 1. 설정 정보 (위대리 오토봇과 동일)
+# ─────────────────────────────────────────────────────────────
 SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
-BOT_TOKEN = "7524501477:AAEJu3xmHi2Mjxb86ARc6KtMfBh9H9pRZIM"
-CHAT_ID = "1442265681"
 
-def send_telegram(text):
+# 환경변수에서 토큰 읽기 (GitHub Secrets 에서 주입)
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
+CHAT_ID   = os.environ.get('CHAT_ID', '')
+
+
+# ─────────────────────────────────────────────────────────────
+# 2. Telegram 발송
+# ─────────────────────────────────────────────────────────────
+def send_telegram(text: str) -> None:
+    if not BOT_TOKEN or not CHAT_ID:
+        print("⚠️ Telegram BOT_TOKEN/CHAT_ID 미설정 — 발송 스킵")
+        return
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
@@ -19,9 +28,13 @@ def send_telegram(text):
     except Exception:
         pass
 
+
+# ─────────────────────────────────────────────────────────────
+# 3. 리셋 작업
+# ─────────────────────────────────────────────────────────────
 def reset_wedaeri_orders():
     print(f"🔄 [{datetime.now()}] 위대리 주문 수량 초기화 시작...")
-    
+
     try:
         # GCP 인증 및 시트 연결
         creds_raw = os.environ.get('GCP_CREDENTIALS')
@@ -32,18 +45,22 @@ def reset_wedaeri_orders():
         creds_dict = json.loads(creds_raw)
         if 'private_key' in creds_dict:
             creds_dict['private_key'] = creds_dict['private_key'].replace('\\n', '\n')
-            
+
         gc = gspread.service_account_from_dict(creds_dict)
         sh = gc.open_by_key(SHEET_KEY)
         ws = sh.worksheet("위대리")
 
-        # 2. 주문 정보 초기화 (L4: 상태, M4: 방식, O4: 수량)
+        # 주문 정보 초기화 (L4: 상태, M4: 방식, O4: 수량)
         # N4(현재가)는 참고용이므로 두거나 0으로 만듭니다.
         ws.update_acell('L4', '관망(리셋)')
         ws.update_acell('M4', '-')
         ws.update_acell('O4', 0)
-        
-        msg = "🧹 *[위대리] 주간 주문 초기화 완료*\n- 이번 주 주문 수량이 `0`으로 리셋되었습니다.\n- 즐거운 주말 보내세요, 용성님!"
+
+        msg = (
+            "🧹 *[위대리] 주간 주문 초기화 완료*\n"
+            "- 이번 주 주문 수량이 `0`으로 리셋되었습니다.\n"
+            "- 즐거운 주말 보내세요, 용성님!"
+        )
         send_telegram(msg)
         print("✅ 초기화 완료 및 텔레그램 발송 성공")
 
@@ -52,14 +69,11 @@ def reset_wedaeri_orders():
         send_telegram(err_msg)
         print(err_msg)
 
-# 3. 스케줄 설정: 매주 토요일 12:00
-schedule.every().saturday.at("12:00").do(reset_wedaeri_orders)
 
+# ─────────────────────────────────────────────────────────────
+# 4. 진입점
+#    스케줄링은 GitHub Actions cron 이 담당합니다.
+#    이 스크립트는 한 번 실행되고 종료됩니다.
+# ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("⏰ 위대리 리셋 스케줄러 가동 중... (매주 토요일 12:00)")
-    # 테스트를 원하시면 아래 주석을 풀고 실행해보세요.
-    # reset_wedaeri_orders()
-    
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+    reset_wedaeri_orders()
