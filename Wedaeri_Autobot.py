@@ -37,8 +37,8 @@ PARAMS = {
 }
 
 # Telegram
-BOT_TOKEN = os.environ.get('7524501477:AAGyU6_17S5dOzOqYfop6bZrWM3_yOcyW4o', '')
-CHAT_ID   = os.environ.get('1442265681', '')
+BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
+CHAT_ID   = os.environ.get('CHAT_ID', '')
 
 print(f"🔍 ENV CHECK: BOT_TOKEN={'있음(' + str(len(BOT_TOKEN)) + '자)' if BOT_TOKEN else '없음'}, CHAT_ID={'있음' if CHAT_ID else '없음'}")
 
