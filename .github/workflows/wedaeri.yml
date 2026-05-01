@@ -1,10 +1,8 @@
 name: Wedaeri Autobot Triggered by Cron-job
 
 on:
-  # Cron-job.org 또는 외부 API 호출을 통해 실행
   repository_dispatch:
     types: [external_trigger]
-  # GitHub 웹사이트에서 직접 [Run workflow] 버튼으로 실행 가능
   workflow_dispatch:
 
 jobs:
@@ -12,27 +10,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 리포지토리 코드 가져오기
       - name: Checkout code
         uses: actions/checkout@v5
 
-      # 2. 파이썬 환경 설정 (최신 안정 버전 3.11 사용)
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.11'
-          cache: 'pip'   # pip 의존성 캐싱 → 빌드 속도 향상
+          cache: 'pip'
 
-      # 3. 필수 라이브러리 설치 (requirements.txt 기반)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. 오토봇 실행
       - name: Run Wedaeri Autobot
         env:
-          # GitHub Secrets에 저장된 값을 환경 변수로 연결
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
           BOT_TOKEN:       ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID:         ${{ secrets.TELEGRAM_CHAT_ID }}
