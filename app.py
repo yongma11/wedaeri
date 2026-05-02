@@ -1,6 +1,5 @@
 # wedaeri_app.py — TQQQ 위대리 v4.0
 # Tab1: 실전 트레이딩 | Tab2: 백테스트 분석 | Tab3: 전략 로직
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -21,21 +20,22 @@ CONFIG_FILE = Path(__file__).parent / "wedaeri_config.json"
 # 봇과 동일한 시트 키 (bot.py의 SHEET_KEY와 일치시켜야 함)
 SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
 
-# 앱 최초 실행 시 사용할 기본값
+# 앱 최초 실행 시 사용할 기본값 — 최적화 파라미터 + 초기 현금 45%
 DEFAULT_CONFIG = {
     # 사이드바 (실전)
     'start_date': '2025-12-26',
     'cap':        108000,
-    'cash':       40,       # 정수 %
+    'cash':       45,       # 정수 % (초기 현금 비중)
     # 백테스트 전용
     'bt_cap':     20000,
-    'bt_cash':    40,       # 정수 %
-    'bt_start':   '2010-01-01',  # 백테스트 시작일
-    # 전략 파라미터 (Tab1·Tab2 공유)
-    'hc':  7.0,   'lc': -7.0,
-    'sH':  1.5,   'sM':  0.6,   'sL': 0.35,
-    'bH':  0.4,   'bM':  0.6,   'bL': 2.0,
+    'bt_cash':    45,       # 정수 %
+    'bt_start':   '2010-01-01',
+    # 전략 파라미터 — 최적화 값 (Grid Search: MDD 35% 이내 최대 CAGR)
+    'hc':  6.0,   'lc': -6.0,
+    'sH':  2.0,   'sM':  0.3,   'sL': 0.2,
+    'bH':  1.0,   'bM':  0.6,   'bL': 2.0,
 }
+
 
 def load_config() -> dict:
     """저장된 JSON 설정 파일 로드 (없으면 기본값 반환)"""
@@ -48,7 +48,8 @@ def load_config() -> dict:
             pass
     return DEFAULT_CONFIG.copy()
 
-def save_config(ss) -> None:
+
+def save_config(ss) -> dict:
     """현재 session_state 값을 JSON 파일에 저장"""
     # p_start 는 date 객체일 수도 있고 문자열일 수도 있음 → 항상 문자열로 변환
     raw_start = ss.get('p_start', DEFAULT_CONFIG['start_date'])
@@ -87,16 +88,13 @@ def _get_gspread_client():
     """
     try:
         import gspread
-
         creds = None
-
         # 1순위: TOML 섹션 형식 [gcp_service_account]
         try:
             sec = st.secrets["gcp_service_account"]
             creds = dict(sec)
         except Exception:
             pass
-
         # 2순위: JSON 문자열 형식 GCP_CREDENTIALS
         if creds is None:
             try:
@@ -105,22 +103,17 @@ def _get_gspread_client():
                     creds = json.loads(raw) if isinstance(raw, str) else dict(raw)
             except Exception:
                 pass
-
         # 3순위: 환경변수
         if creds is None:
             raw = os.environ.get("GCP_CREDENTIALS")
             if raw:
                 creds = json.loads(raw)
-
         if creds is None:
             return None, "Streamlit Secrets에 gcp_service_account 또는 GCP_CREDENTIALS가 없습니다"
-
         if 'private_key' in creds:
             creds['private_key'] = creds['private_key'].replace('\\n', '\n')
-
         gc = gspread.service_account_from_dict(creds)
         return gc, None
-
     except Exception as e:
         return None, str(e)
 
@@ -135,6 +128,7 @@ def _sheets_write(ws, rows: list) -> None:
 
 def save_config_to_sheets(cfg: dict) -> tuple[bool, str]:
     """설정 딕셔너리를 Google Sheets '설정' 시트에 저장합니다.
+
     Returns: (성공 여부, 에러 메시지)
     """
     try:
@@ -146,11 +140,9 @@ def save_config_to_sheets(cfg: dict) -> tuple[bool, str]:
             ws = sh.worksheet("설정")
         except Exception:
             ws = sh.add_worksheet(title="설정", rows=30, cols=2)
-
         rows = [['key', 'value']]
         for k, v in cfg.items():
             rows.append([k, str(v)])
-
         ws.clear()
         _sheets_write(ws, rows)
         return True, ""
@@ -162,7 +154,6 @@ def save_config_to_sheets(cfg: dict) -> tuple[bool, str]:
 # 1. 페이지 설정 & 스타일
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="위대리 Quantum T-Flow v4.0", layout="wide")
-
 st.markdown("""
 <style>
 [data-testid="stSidebar"] { background-color: #f8f9fa; border-right: 1px solid #dee2e6; }
@@ -184,10 +175,23 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────
 # session_state 초기화 (앱 최초 실행 시 JSON → session_state)
 # ─────────────────────────────────────────────────────────────
+# ✅ 영속성 핵심 로직:
+#   1) JSON 파일이 있으면 그 값을 우선으로 session_state 에 주입
+#   2) Tab2 의 프리셋 셀렉트박스를 "직접 설정" 으로 강제 초기화
+#      → 앱이 다시 켜질 때 프리셋 자동 적용 로직이 발동해
+#         로드한 값을 덮어쓰는 버그를 차단
+PRESET_OPTIONS = [
+    "🏆 최적화 파라미터 (CAGR ~43%, MDD ~31%)",
+    "🛡️ 안정형 파라미터 (CAGR ~36%, MDD ~24%)",
+    "✏️ 직접 설정",
+]
+PRESET_CUSTOM = "✏️ 직접 설정"
+
 if '_cfg_loaded' not in st.session_state:
     _cfg = load_config()
     ss   = st.session_state
     ss['_cfg_loaded'] = True
+
     # date_input 은 date 객체를 요구 — 문자열로 저장된 값을 변환
     ss['p_start']    = datetime.strptime(str(_cfg['start_date'])[:10], "%Y-%m-%d").date()
     ss['p_cap']      = _cfg['cap']
@@ -195,6 +199,7 @@ if '_cfg_loaded' not in st.session_state:
     ss['p_bt_cap']   = _cfg['bt_cap']
     ss['p_bt_cash']  = _cfg['bt_cash']
     ss['p_bt_start'] = datetime.strptime(str(_cfg.get('bt_start', '2010-01-01'))[:10], "%Y-%m-%d").date()
+
     ss['p_hc']      = _cfg['hc']
     ss['p_lc']      = _cfg['lc']
     ss['p_sH']      = _cfg['sH']
@@ -203,6 +208,10 @@ if '_cfg_loaded' not in st.session_state:
     ss['p_bH']      = _cfg['bH']
     ss['p_bM']      = _cfg['bM']
     ss['p_bL']      = _cfg['bL']
+
+    # 🔑 프리셋 셀렉트박스를 "직접 설정"으로 고정 → 자동 적용 비활성화
+    ss['p_preset']     = PRESET_CUSTOM
+    ss['_last_preset'] = None   # 자동 적용 트리거 차단
 
 # ─────────────────────────────────────────────────────────────
 # 차트 공통 레이아웃
@@ -248,6 +257,7 @@ with st.sidebar:
                     st.warning(f"⚠️ Sheets 동기화 실패: {err}\n\nStreamlit Secrets에 GCP_CREDENTIALS를 추가해야 봇과 연동됩니다.", icon="🔴")
 
     st.divider()
+
     # ── Sheets 연결 상태 표시 ─────────────────────────────────
     _gc, _gc_err = _get_gspread_client()
     if _gc:
@@ -256,11 +266,14 @@ with st.sidebar:
         st.error("🔴 Sheets 미연결 — 봇 자동 반영 불가\n\nStreamlit Secrets에 GCP_CREDENTIALS 추가 필요", icon="🔴")
 
     st.divider()
+
     # 현재 적용 중인 파라미터를 session_state에서 동적으로 표시
     _p = st.session_state
-    _hc_d = _p.get('p_hc', 7.0); _lc_d = _p.get('p_lc', -7.0)
-    _sH_d = _p.get('p_sH', 1.5); _sM_d = _p.get('p_sM', 0.6); _sL_d = _p.get('p_sL', 0.35)
-    _bH_d = _p.get('p_bH', 0.4); _bM_d = _p.get('p_bM', 0.6); _bL_d = _p.get('p_bL', 2.0)
+    _hc_d = _p.get('p_hc', DEFAULT_CONFIG['hc']);  _lc_d = _p.get('p_lc', DEFAULT_CONFIG['lc'])
+    _sH_d = _p.get('p_sH', DEFAULT_CONFIG['sH']);  _sM_d = _p.get('p_sM', DEFAULT_CONFIG['sM'])
+    _sL_d = _p.get('p_sL', DEFAULT_CONFIG['sL'])
+    _bH_d = _p.get('p_bH', DEFAULT_CONFIG['bH']);  _bM_d = _p.get('p_bM', DEFAULT_CONFIG['bM'])
+    _bL_d = _p.get('p_bL', DEFAULT_CONFIG['bL'])
     st.markdown(f"""
 **📌 현재 적용 파라미터**
 
@@ -287,14 +300,17 @@ def load_wedaeri_data():
     try:
         raw = yf.download(["QQQ", "TQQQ"], start="2010-01-01",
                           auto_adjust=True, progress=False)
+
         if isinstance(raw.columns, pd.MultiIndex):
             df = raw['Close'].copy()
         else:
             df = raw.copy()
+
         df = df.reset_index()
         df.columns = [str(c).strip() for c in df.columns]
         if 'Date' not in df.columns:
             df.rename(columns={'index': 'Date'}, inplace=True)
+
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.dropna(subset=['QQQ']).reset_index(drop=True)
 
@@ -309,7 +325,6 @@ def load_wedaeri_data():
                     .reset_index())
         n = len(qqq_wkly)
         W = 260   # 5년 = 260주
-
         t = np.arange(1, n + 1, dtype=float)
         y = np.log(qqq_wkly['QQQ'].values.astype(float))
 
@@ -324,11 +339,9 @@ def load_wedaeri_data():
             w     = min(i + 1, W)
             end   = i + 1        # prefix-sum 끝 인덱스 (포함)
             start = end - w      # prefix-sum 시작 인덱스 (불포함)
-
             if w == 1:           # 데이터 1개: 추세 = 가격 자체
                 growth_wkly[i] = float(qqq_wkly['QQQ'].iloc[i])
                 continue
-
             s_t  = ps_t[end]  - ps_t[start]
             s_y  = ps_y[end]  - ps_y[start]
             s_t2 = ps_t2[end] - ps_t2[start]
@@ -347,17 +360,16 @@ def load_wedaeri_data():
         # 일별 데이터에 주간 Growth/Eval 병합 (금요일 날짜 기준)
         df = df.merge(qqq_wkly[['Date', 'Growth', 'Eval']], on='Date', how='left')
         return df
-
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
         return pd.DataFrame()
-
 
 # ─────────────────────────────────────────────────────────────
 # 3-b. 실시간 종가 주입 (캐시 밖 — 장 마감 후 즉시 반영)
 # ─────────────────────────────────────────────────────────────
 def inject_live_price(df: pd.DataFrame) -> pd.DataFrame:
     """장 마감 후 최신 종가를 df에 주입합니다.
+
     - 오늘(또는 가장 최근 거래일)의 TQQQ/QQQ 실시간 가격을 df 마지막 행에 반영
     - Eval이 없으면 직전 주의 Eval을 재사용 (OLS는 주 단위로 거의 안 변함)
     - 토요일 아침처럼 캐시가 금요일 장 마감 전 데이터인 경우를 커버
@@ -377,7 +389,6 @@ def inject_live_price(df: pd.DataFrame) -> pd.DataFrame:
             target = today
 
         last_df_date = df['Date'].iloc[-1]
-
         if target > last_df_date:
             # 타겟 날짜가 df에 없음 → 새 행 추가 (Eval은 직전 값 재사용)
             last_eval   = float(df['Eval'].dropna().iloc[-1])
@@ -399,14 +410,13 @@ def inject_live_price(df: pd.DataFrame) -> pd.DataFrame:
         pass
     return df
 
-
 # ─────────────────────────────────────────────────────────────
 # 4. 실전 시뮬레이션 (Tab 1용 — 지정 시작일부터)
 # ─────────────────────────────────────────────────────────────
 def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
-                    hc=0.07, lc=-0.07,
-                    sH=1.5, sM=0.6, sL=0.35,
-                    bH=0.4, bM=0.6, bL=2.0):
+                    hc=0.06, lc=-0.06,
+                    sH=2.0, sM=0.3, sL=0.2,
+                    bH=1.0, bM=0.6, bL=2.0):
     sim  = data[data['Date'] >= pd.to_datetime(start_dt)].copy()
     # resample('W-FRI').last() : 금요일 휴장 주는 그 주 마지막 거래일 자동 사용
     wkly = (sim.set_index('Date')[['TQQQ', 'Eval']]
@@ -456,23 +466,24 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
         })
     return pd.DataFrame(logs)
 
-
 # ─────────────────────────────────────────────────────────────
 # 5. 전체 기간 백테스트 (Tab 2용)
 # ─────────────────────────────────────────────────────────────
-def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
-                      hc=0.07, lc=-0.07,
-                      sH=1.5,  sM=0.6,  sL=0.35,
-                      bH=0.4,  bM=0.6,  bL=2.0,
+def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
+                      hc=0.06, lc=-0.06,
+                      sH=2.0,  sM=0.3,  sL=0.2,
+                      bH=1.0,  bM=0.6,  bL=2.0,
                       start_date=None):
     # resample('W-FRI').last() : 금요일 휴장 주는 그 주 마지막 거래일 자동 사용
     wkly = (data.set_index('Date')[['TQQQ', 'Eval']]
                 .resample('W-FRI').last()
                 .dropna()
                 .reset_index())
+
     # 백테스트 시작일 필터
     if start_date is not None:
         wkly = wkly[wkly['Date'] >= pd.to_datetime(start_date)].reset_index(drop=True)
+
     if len(wkly) < 2:   # 최소 2주 필요 (첫 주 초기화 + 1주 매매)
         return None
 
@@ -553,7 +564,6 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.40,
         'yearly': yearly_rows,
     }
 
-
 # ─────────────────────────────────────────────────────────────
 # 메인 실행
 # ─────────────────────────────────────────────────────────────
@@ -572,27 +582,26 @@ if df.empty:
 _ss = st.session_state
 log_df = run_wedaeri_sim(
     df, st_start, st_cap, st_cash_ratio,
-    hc  = _ss.get('p_hc', 7.0)  / 100,
-    lc  = _ss.get('p_lc', -7.0) / 100,
-    sH  = _ss.get('p_sH', 1.5),
-    sM  = _ss.get('p_sM', 0.6),
-    sL  = _ss.get('p_sL', 0.35),
-    bH  = _ss.get('p_bH', 0.4),
-    bM  = _ss.get('p_bM', 0.6),
-    bL  = _ss.get('p_bL', 2.0),
+    hc  = _ss.get('p_hc', DEFAULT_CONFIG['hc']) / 100,
+    lc  = _ss.get('p_lc', DEFAULT_CONFIG['lc']) / 100,
+    sH  = _ss.get('p_sH', DEFAULT_CONFIG['sH']),
+    sM  = _ss.get('p_sM', DEFAULT_CONFIG['sM']),
+    sL  = _ss.get('p_sL', DEFAULT_CONFIG['sL']),
+    bH  = _ss.get('p_bH', DEFAULT_CONFIG['bH']),
+    bM  = _ss.get('p_bM', DEFAULT_CONFIG['bM']),
+    bL  = _ss.get('p_bL', DEFAULT_CONFIG['bL']),
 )
 
 tqqq_series = df['TQQQ'].dropna()
 latest_tqqq = float(tqqq_series.iloc[-1]) if not tqqq_series.empty else 0.0
 eval_series  = df['Eval'].dropna()
 latest_eval  = float(eval_series.iloc[-1]) if not eval_series.empty else 0.0
-_hc_rt = _ss.get('p_hc', 7.0) / 100
-_lc_rt = _ss.get('p_lc', -7.0) / 100
+_hc_rt = _ss.get('p_hc', DEFAULT_CONFIG['hc']) / 100
+_lc_rt = _ss.get('p_lc', DEFAULT_CONFIG['lc']) / 100
 latest_tier  = 'HIGH' if latest_eval >= _hc_rt else ('LOW' if latest_eval <= _lc_rt else 'MID')
 
 st.title("🚀 TQQQ [위대리] v4.0 : 균형형 트레이딩 시스템")
 tab1, tab2, tab3 = st.tabs(["🔥 실전 트레이딩", "📊 백테스트 분석", "📘 전략 로직"])
-
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 1 — 실전 트레이딩
@@ -603,7 +612,6 @@ with tab1:
         st.stop()
 
     last = log_df.iloc[-1]
-
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("시장 모드",     last['티어'],                  last['시장평가'])
     c2.metric("TQQQ 현재가",  f"${latest_tqqq:.2f}")
@@ -637,7 +645,6 @@ with tab1:
     with st.expander("📋 상세 매매 로그", expanded=True):
         st.dataframe(log_df.iloc[::-1], use_container_width=True)
 
-
 # ═══════════════════════════════════════════════════════════════
 # TAB 2 — 백테스트 분석
 # ═══════════════════════════════════════════════════════════════
@@ -647,30 +654,26 @@ with tab2:
 
     # ── 파라미터 패널 ─────────────────────────────────────────
     with st.expander("⚙️ 백테스트 파라미터 설정", expanded=True):
-
+        # 셀렉트박스는 key='p_preset' 으로 session_state 와 연동됨
+        # → 앱 시작 시 init 블록에서 '직접 설정' 으로 강제 → 자동 적용 차단
         preset = st.selectbox(
             "파라미터 프리셋 선택",
-            ["📋 현재 파라미터  (CAGR ~42%, MDD ~32%)",
-             "🏆 최적화 파라미터 (CAGR ~43%, MDD ~31%)",
-             "🛡️ 안정형 파라미터 (CAGR ~36%, MDD ~24%)",
-             "✏️ 직접 설정"],
-            index=0
+            PRESET_OPTIONS,
+            key='p_preset',
         )
-
         PRESETS = {
-            # 스크린샷 기준 — hc 7%, lc -7%, init_cash 40%
-            "현재":  dict(hc=0.07, lc=-0.07, sH=1.5, sM=0.6,  sL=0.35, bH=0.4, bM=0.6, bL=2.0),
             # 최적화 결과 — MDD 35% 이내 최대 CAGR (Grid Search)
             "최적화": dict(hc=0.06, lc=-0.06, sH=2.0, sM=0.3,  sL=0.2,  bH=1.0, bM=0.6, bL=2.0),
             # 안정형 — MDD 25% 이내 최적
             "안정형": dict(hc=0.06, lc=-0.10, sH=2.0, sM=0.6,  sL=0.33, bH=1.0, bM=1.0, bL=2.0),
         }
-
-        key_map = {"📋 현재": "현재", "🏆 최적화": "최적화", "🛡️ 안정형": "안정형"}
+        key_map = {"🏆 최적화": "최적화", "🛡️ 안정형": "안정형"}
         pkey    = next((v for k, v in key_map.items() if k in preset), None)
 
         # ── 프리셋 선택 시 공유 session_state(p_*) 강제 갱신 ──────
         # p_* 키는 Tab1 실전 트레이딩에도 그대로 적용됩니다.
+        # ✅ 영속성 보호: 앱 시작 시 _last_preset=None 이고 pkey=None('직접 설정')
+        #    이라 이 블록은 발동하지 않음 → 저장된 값 유지
         _ss = st.session_state
         if pkey and _ss.get('_last_preset') != pkey:
             _ss['_last_preset'] = pkey
@@ -685,12 +688,14 @@ with tab2:
             _ss['p_bL'] = v['bL']
 
         P_DEF = PRESETS[pkey] if pkey else {
-            'hc': _ss.get('p_hc', 7.0) / 100,
-            'lc': _ss.get('p_lc', -7.0) / 100,
-            'sH': _ss.get('p_sH', 1.5), 'sM': _ss.get('p_sM', 0.6),
-            'sL': _ss.get('p_sL', 0.35),
-            'bH': _ss.get('p_bH', 0.4), 'bM': _ss.get('p_bM', 0.6),
-            'bL': _ss.get('p_bL', 2.0),
+            'hc': _ss.get('p_hc', DEFAULT_CONFIG['hc']) / 100,
+            'lc': _ss.get('p_lc', DEFAULT_CONFIG['lc']) / 100,
+            'sH': _ss.get('p_sH', DEFAULT_CONFIG['sH']),
+            'sM': _ss.get('p_sM', DEFAULT_CONFIG['sM']),
+            'sL': _ss.get('p_sL', DEFAULT_CONFIG['sL']),
+            'bH': _ss.get('p_bH', DEFAULT_CONFIG['bH']),
+            'bM': _ss.get('p_bM', DEFAULT_CONFIG['bM']),
+            'bL': _ss.get('p_bL', DEFAULT_CONFIG['bL']),
         }
 
         p1, p2, p3 = st.columns(3)
@@ -698,21 +703,18 @@ with tab2:
             st.markdown("**기본 설정**")
             bt_start_date = st.date_input("백테스트 시작일", key='p_bt_start')
             bt_cap        = st.number_input("초기 자본 ($)", value=20_000, step=1000, key='p_bt_cap')
-            bt_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100,
-                                      int(_ss.get('p_bt_cash', 40)), key='p_bt_cash') / 100
+            bt_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100, key='p_bt_cash') / 100
             st.markdown("**시장 평가 기준**")
             # p_hc/p_lc 는 % 단위로 저장 → 슬라이더가 그대로 표시
             bt_hc = st.slider("HIGH 기준 Eval ≥ (%)", 1.0, 20.0,
                                float(P_DEF['hc']*100), 0.5, key='p_hc') / 100
             bt_lc = st.slider("LOW 기준  Eval ≤ (%)", -20.0, -1.0,
                                float(P_DEF['lc']*100), 0.5, key='p_lc') / 100
-
         with p2:
             st.markdown("**매도 배율** (상승 시 차익실현 강도)")
             bt_sH = st.slider("매도 HIGH ×", 0.1, 5.0,  float(P_DEF['sH']), 0.05, key='p_sH')
             bt_sM = st.slider("매도 MID  ×", 0.1, 3.0,  float(P_DEF['sM']), 0.05, key='p_sM')
             bt_sL = st.slider("매도 LOW  ×", 0.05, 2.0, float(P_DEF['sL']), 0.05, key='p_sL')
-
         with p3:
             st.markdown("**매수 배율** (하락 시 추가 매수 강도)")
             bt_bH = st.slider("매수 HIGH ×", 0.1, 3.0,  float(P_DEF['bH']), 0.05, key='p_bH')
@@ -732,7 +734,7 @@ with tab2:
                     f"→ 슬라이더·실전 탭 모두 자동 반영됩니다."
                 )
             else:
-                st.info("💡 슬라이더를 조정하면 **실전 트레이딩 탭**에도 즉시 반영됩니다.")
+                st.info("💡 슬라이더를 조정하면 **실전 트레이딩 탭**에도 즉시 반영됩니다. 저장 후에도 그대로 유지됩니다.")
         with btn_col:
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("💾 파라미터 저장", use_container_width=True):
@@ -785,7 +787,6 @@ with tab2:
 
     # ── 성과 지표 ─────────────────────────────────────────────
     st.markdown("### 📈 성과 지표")
-
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("CAGR",         f"{bt_cur['cagr']:.2%}",
               f"최적화 {bt_opt['cagr']:.2%}")
@@ -820,7 +821,6 @@ with tab2:
 
     # ── 자산 곡선 ─────────────────────────────────────────────
     st.markdown("### 📈 누적 자산 곡선 (로그 스케일)")
-
     fig_eq = go.Figure()
     fig_eq.add_trace(go.Scatter(
         x=dates, y=bt_cur['eq'], name='내 설정',
@@ -849,7 +849,6 @@ with tab2:
 
     # ── MDD 곡선 + Eval 분포 ──────────────────────────────────
     col_dd, col_ev = st.columns(2)
-
     with col_dd:
         fig_dd = go.Figure()
         fig_dd.add_trace(go.Scatter(
@@ -879,7 +878,6 @@ with tab2:
         n_high  = int((ev_vals >= bt_hc).sum())
         n_low   = int((ev_vals <= bt_lc).sum())
         n_mid   = len(ev_vals) - n_high - n_low
-
         fig_ev = go.Figure()
         fig_ev.add_trace(go.Histogram(
             x=ev_vals * 100, nbinsx=40,
@@ -904,13 +902,11 @@ with tab2:
 
     # ── 주간 수익률 분포 ──────────────────────────────────────
     st.markdown("### 📊 주간 수익률 분포")
-
     wr = bt_cur['rets'] * 100
     if len(wr) < 2:
         st.info("⚠️ 주간 데이터가 부족합니다. 백테스트 시작일을 더 앞으로 설정해 주세요.")
     else:
         pos_pct = (wr > 0).mean() * 100
-
         fig_ret = go.Figure()
         fig_ret.add_trace(go.Histogram(
             x=wr, nbinsx=60,
@@ -931,10 +927,8 @@ with tab2:
 
     # ── 티어별 성과 ───────────────────────────────────────────
     st.markdown("### 🎯 티어별 성과 분석")
-
     tiers_arr = np.array(bt_cur['tiers'])
     wr_full   = np.concatenate([[0], wr]) if len(wr) > 0 else np.array([0.0])  # 첫 주 0 패딩
-
     tier_rows = []
     for name, icon in [('HIGH', '🟡'), ('MID', '🔵'), ('LOW', '🟢')]:
         mask = tiers_arr == name
@@ -950,7 +944,6 @@ with tab2:
             '최대 하락': f"{t_rets.min():+.2f}%",
             '양전 비율': f"{(t_rets > 0).mean():.1%}",
         })
-
     if tier_rows:
         st.dataframe(pd.DataFrame(tier_rows), use_container_width=True, hide_index=True)
 
@@ -983,7 +976,6 @@ with tab2:
         apply_grid(fig_yr)
         st.plotly_chart(fig_yr, use_container_width=True)
 
-
 # ═══════════════════════════════════════════════════════════════
 # TAB 3 — 전략 로직
 # ═══════════════════════════════════════════════════════════════
@@ -994,7 +986,6 @@ with tab3:
     # ── 전략 개요 ─────────────────────────────────────────────
     st.markdown("""
 ### 🎯 전략 개요
-
 **위대리 전략**은 나스닥 100(QQQ)의 5년 장기 추세와 현재 가격의 괴리를 측정해,
 시장이 **과열(HIGH)** 이면 수익을 실현하고, **침체(LOW)** 이면 공격적으로 매수하는
 **역추세 + 추세추종 혼합 리밸런싱 전략**입니다.
@@ -1002,22 +993,18 @@ with tab3:
 > 💡 핵심 철학: *"시장 온도계(Eval)가 낮을수록 더 많이 사고, 높을수록 더 많이 판다."*
 > 매주 금요일 LOC 주문 1회 — 감정 없이 기계적으로 실행합니다.
 """)
-
     st.divider()
 
     # ── Step 1: Eval 계산 ─────────────────────────────────────
     col_l, col_r = st.columns([1.3, 1])
-
     with col_l:
         st.markdown("""
 ### 📐 Step 1. QQQ 시장 평가(Eval) 계산
-
 **Eval**은 QQQ 현재가가 5년 장기 추세 대비 얼마나 비싸거나 싼지를 나타내는 온도계입니다.
 
 ```python
-# 5년(1260거래일) 롤링 log-선형 회귀
-log(QQQ) = a + b × t   (t = 날짜의 순번)
-
+# 5년(260주) 롤링 log-선형 회귀
+log(QQQ) = a + b × t   (t = 주의 순번)
 Growth = exp(a + b × t_오늘)  ← 추세선의 오늘 값
 Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
 ```
@@ -1029,15 +1016,14 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
 | 단순 5년 이동평균 | 과거 가격 평균 | 상승장에서 항상 현재가 > 평균 → Eval 항상 양수(과열) |
 | **log-선형 회귀** | 추세선을 오늘 시점으로 외삽 | ✅ 현실적인 추세 대비 위치 측정 |
 
-**Eval 해석:**
+**Eval 해석 (현재 기본 임계값 ±6%):**
 
 | Eval 값 | 의미 | 티어 |
 |---------|------|------|
-| +10% 이상 | QQQ가 추세보다 10% 고평가 | HIGH |
+| +6% 이상 | QQQ가 추세보다 6%↑ 고평가 | HIGH |
 | 0% 근처 | 추세에 부합하는 적정 가격 | MID |
-| −10% 이하 | QQQ가 추세보다 10% 저평가 | LOW |
+| −6% 이하 | QQQ가 추세보다 6%↓ 저평가 | LOW |
 """)
-
     with col_r:
         # 현재 시장 상태 카드
         tc = {'HIGH': '#fbbf24', 'MID': '#60a5fa', 'LOW': '#4ade80'}.get(latest_tier, '#60a5fa')
@@ -1068,11 +1054,11 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
                 fillcolor='rgba(96,165,250,0.2)',
                 name='Eval'
             ))
-            fig_e.add_hline(y=7.0,  line_color='#fbbf24', line_dash='dash', line_width=1,
+            fig_e.add_hline(y=_hc_d,  line_color='#fbbf24', line_dash='dash', line_width=1,
                              annotation_text="HIGH", annotation_font=dict(color='#fbbf24', size=9))
-            fig_e.add_hline(y=-7.0, line_color='#4ade80', line_dash='dash', line_width=1,
+            fig_e.add_hline(y=_lc_d,  line_color='#4ade80', line_dash='dash', line_width=1,
                              annotation_text="LOW",  annotation_font=dict(color='#4ade80', size=9))
-            fig_e.add_hline(y=0,    line_color='#475569', line_dash='dot',  line_width=1)
+            fig_e.add_hline(y=0,      line_color='#475569', line_dash='dot',  line_width=1)
             fig_e.update_layout(
                 title='최근 1년 Eval 추이',
                 yaxis_title='Eval (%)',
@@ -1085,51 +1071,48 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
 
     # ── Step 2: 3-티어 시스템 ─────────────────────────────────
     st.markdown("### 🎚️ Step 2. 3-티어 시장 분류")
-
     t1, t2, t3 = st.columns(3)
     with t1:
-        st.markdown("""
+        st.markdown(f"""
 <div class="tier-high">
 <h4>🟡 HIGH 티어 — 과열 구간</h4>
-<b>조건:</b> Eval ≥ +7.0%<br><br>
+<b>조건:</b> Eval ≥ +{_hc_d:.1f}%<br><br>
 시장이 추세보다 뜨거운 상태.<br>
 주가 상승 시 차익을 적극 실현해<br>
 현금을 축적합니다.<br><br>
 <table width="100%">
-  <tr><td>매도 배율</td><td align="right"><b>1.5× (기본)</b></td></tr>
-  <tr><td>매수 배율</td><td align="right">0.4×</td></tr>
+  <tr><td>매도 배율</td><td align="right"><b>{_sH_d}× ★</b></td></tr>
+  <tr><td>매수 배율</td><td align="right">{_bH_d}×</td></tr>
 </table>
 → <b>팔아서 현금 쌓기</b>
 </div>
 """, unsafe_allow_html=True)
-
     with t2:
-        st.markdown("""
+        st.markdown(f"""
 <div class="tier-mid">
 <h4>🔵 MID 티어 — 중립 구간</h4>
-<b>조건:</b> −7% < Eval < +7.0%<br><br>
+<b>조건:</b> {_lc_d:.1f}% &lt; Eval &lt; +{_hc_d:.1f}%<br><br>
 시장이 추세 근처에서 움직이는<br>
 평상시 상태.<br>
 균형 잡힌 비율로<br>기계적 리밸런싱.<br><br>
 <table width="100%">
-  <tr><td>매도 배율</td><td align="right"><b>0.6×</b></td></tr>
-  <tr><td>매수 배율</td><td align="right"><b>0.6×</b></td></tr>
+  <tr><td>매도 배율</td><td align="right"><b>{_sM_d}×</b></td></tr>
+  <tr><td>매수 배율</td><td align="right"><b>{_bM_d}×</b></td></tr>
 </table>
 → <b>균형 유지</b>
 </div>
 """, unsafe_allow_html=True)
-
     with t3:
-        st.markdown("""
+        st.markdown(f"""
 <div class="tier-low">
 <h4>🟢 LOW 티어 — 저평가 구간</h4>
-<b>조건:</b> Eval ≤ −7%<br><br>
+<b>조건:</b> Eval ≤ {_lc_d:.1f}%<br><br>
 시장이 추세보다 차가운 상태.<br>
 역사적으로 가장 강한<br>
 매수 기회 구간.<br><br>
 <table width="100%">
-  <tr><td>매도 배율</td><td align="right">0.35×</td></tr>
-  <tr><td>매수 배율</td><td align="right"><b>2.0× ★</b></td></tr>
+  <tr><td>매도 배율</td><td align="right">{_sL_d}×</td></tr>
+  <tr><td>매수 배율</td><td align="right"><b>{_bL_d}× ★</b></td></tr>
 </table>
 → <b>공격적 매수 — 핵심!</b>
 </div>
@@ -1140,7 +1123,6 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
     # ── Step 3: 매매 로직 ─────────────────────────────────────
     st.markdown("### ⚙️ Step 3. 매매 실행 로직")
     st.markdown("**매주 금요일 장 마감 10분 전(오후 3:50) LOC 주문으로 실행합니다.**")
-
     st.code("""
 매주 금요일 장 마감 시:
 
@@ -1163,64 +1145,37 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
     # 상승/하락 시 설명
     col_up, col_dn = st.columns(2)
     with col_up:
-        st.info("""
+        st.info(f"""
 **📈 상승 시 매도 — 차익 실현**
 
 평가 수익의 일정 배율만큼 매도해 현금을 확보합니다.
 
-- **HIGH 티어** → 1.5× : 수익의 1.5배 어치 매도 (적극 실현)
-- **MID 티어** → 0.6× : 수익의 60%만 매도 (적정 실현)
-- **LOW 티어** → 0.35× : 수익의 35%만 매도 (최소 실현)
+- **HIGH 티어** → {_sH_d}× : 수익의 {_sH_d*100:.0f}% 어치 매도 (적극 실현 ★)
+- **MID 티어** → {_sM_d}× : 수익의 {_sM_d*100:.0f}%만 매도 (소폭 실현)
+- **LOW 티어** → {_sL_d}× : 수익의 {_sL_d*100:.0f}%만 매도 (최소 실현)
 
 → 과열 구간에서 더 많이 팔아 현금을 쌓아둡니다.
 → 이 현금이 LOW 티어 발생 시 매수 탄약이 됩니다.
 """)
-
     with col_dn:
-        st.success("""
+        st.success(f"""
 **📉 하락 시 매수 — 저점 매집**
 
 평가 손실의 배율만큼 현금을 투입해 추가 매수합니다.
 
-- **HIGH 티어** → 0.4× : 손실의 40% 예산 매수 (소극)
-- **MID 티어** → 0.6× : 손실의 60% 예산 매수 (적정)
-- **LOW 티어** → 2.0× : 손실의 200% 예산 매수 (공격 ★)
+- **HIGH 티어** → {_bH_d}× : 손실의 {_bH_d*100:.0f}% 예산 매수
+- **MID 티어** → {_bM_d}× : 손실의 {_bM_d*100:.0f}% 예산 매수
+- **LOW 티어** → {_bL_d}× : 손실의 {_bL_d*100:.0f}% 예산 매수 (공격 ★)
 
 → 시장이 차가울수록 더 많이 사서 평균 단가를 낮춥니다.
 → 현금이 부족하면 LOW 티어 기회를 살릴 수 없으므로
-  초기 현금 비중 40% 유지를 권장합니다.
+  초기 현금 비중 45% 유지를 권장합니다.
 """)
-
-    st.divider()
-
-    # ── 파라미터 비교표 ───────────────────────────────────────
-    st.markdown("### 📋 현재 vs 최적화 파라미터 비교")
-
-    param_df = pd.DataFrame({
-        '파라미터':    ['HIGH 기준 (Eval ≥)', 'LOW 기준 (Eval ≤)',
-                       '매도 HIGH', '매도 MID', '매도 LOW',
-                       '매수 HIGH', '매수 MID', '매수 LOW ★',
-                       '— 결과 —', 'CAGR', 'MDD', 'Calmar'],
-        '현재 설정':   ['+7.0%', '−7.0%',
-                       '1.5×', '0.6×', '0.35×',
-                       '0.4×', '0.6×', '2.0×',
-                       '', '~42%', '~32%', '~1.32'],
-        '최적화 설정': ['+6.0%', '−6.0%',
-                       '2.0×', '0.3×', '0.2×',
-                       '1.0×', '0.6×', '2.0×',
-                       '', '~43%', '~31%', '~1.40'],
-        '변화 핵심':   ['기준 하향 → 더 빠른 차익', 'LOW 범위 축소',
-                       '과열 시 더 적극 실현', '중립 매도 줄임', 'LOW일 때 최소 실현',
-                       '과열 시 매수 강화', '중립 매수 소폭 감소', '저점 시 공격 유지',
-                       '', '+1%p 개선', '1%p 개선', '0.08 개선'],
-    })
-    st.dataframe(param_df, use_container_width=True, hide_index=True)
 
     st.divider()
 
     # ── 실전 팁 ───────────────────────────────────────────────
     st.markdown("### 💡 실전 운용 체크리스트")
-
     tip1, tip2, tip3 = st.columns(3)
     with tip1:
         st.warning("""
@@ -1235,7 +1190,7 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
         st.info("""
 **💰 자본 배분 원칙**
 
-- 초기 현금 비중 **40~50%** 권장
+- 초기 현금 비중 **45~50%** 권장
 - 현금 = LOW 티어 발생 시 매수 탄약
 - LOW 티어 때 현금 소진 → 기회 상실
 - 포지션 비중도 주기적으로 점검
@@ -1255,13 +1210,13 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
     st.markdown("""
 ### 📊 위대리 vs TQQQ 단순 보유(B&H) 핵심 비교
 
-| 항목 | 위대리 (현재) | 위대리 (최적화) | TQQQ B&H |
-|------|:---:|:---:|:---:|
-| **연평균 수익(CAGR)** | ~42% | **~43%** | ~40% |
-| **최대 낙폭(MDD)** | **~32%** | **~31%** | ~80% |
-| **Calmar (수익/위험)** | 1.32 | **1.40** | ~0.50 |
-| **심리적 안정성** | ★★★★☆ | ★★★★★ | ★★☆☆☆ |
-| **주간 주문 횟수** | 1회 | 1회 | 없음 |
+| 항목 | 위대리 (최적화 기본값) | TQQQ B&H |
+|------|:---:|:---:|
+| **연평균 수익(CAGR)** | **~43%** | ~40% |
+| **최대 낙폭(MDD)** | **~31%** | ~80% |
+| **Calmar (수익/위험)** | **1.40** | ~0.50 |
+| **심리적 안정성** | ★★★★★ | ★★☆☆☆ |
+| **주간 주문 횟수** | 1회 | 없음 |
 
 > **TQQQ를 그냥 들고 있으면 -80% 이상의 하락을 버텨야 합니다.**
 > 위대리는 비슷한 수익을 내면서 최대 낙폭을 **1/3 수준**으로 줄여줍니다.
