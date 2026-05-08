@@ -317,27 +317,60 @@ def main():
         creds_dict = json.loads(creds_raw)
         if 'private_key' in creds_dict:
             creds_dict['private_key'] = creds_dict['private_key'].replace('\\n', '\n')
+        # creds_dict 구조 점검 — 자주 빠지는 필드 미리 잡기
+        required_keys = ['type', 'client_email', 'private_key', 'token_uri']
+        missing = [k for k in required_keys if not creds_dict.get(k)]
+        if missing:
+            raise ValueError(
+                f"GCP_CREDENTIALS JSON 에 필수 필드 누락: {missing}. "
+                f"보유 필드: {list(creds_dict.keys())}"
+            )
+        client_email_short = creds_dict.get('client_email', 'unknown')[:60]
+        print(f"📧 봇이 사용 중인 서비스 계정: {client_email_short}")
         gc = gspread.service_account_from_dict(creds_dict)
         sh = gc.open_by_key(SHEET_KEY)
         ws = sh.worksheet("위대리")
     except Exception as e:
-        err_str = str(e)
+        import traceback
+        err_str  = str(e) or "(빈 메시지)"
+        err_repr = repr(e)
+        err_type = type(e).__name__
+        tb = traceback.format_exc()
         # 자주 발생하는 케이스별 친절한 진단 메시지
-        if 'account not found' in err_str.lower():
+        haystack = (err_str + ' ' + err_repr + ' ' + tb).lower()
+        if 'account not found' in haystack:
             diagnosis = ("서비스 계정이 GCP 에 존재하지 않습니다. "
-                         "앱과 봇이 *서로 다른* 서비스 계정을 쓰고 있을 가능성이 높습니다. "
-                         "GCP Console 에서 살아있는 계정의 JSON 키를 봇 환경변수 GCP_CREDENTIALS 에 다시 넣어주세요.")
-        elif 'invalid jwt signature' in err_str.lower() or 'invalid_grant' in err_str.lower():
-            diagnosis = ("서비스 계정 키가 무효합니다. private_key 형식 손상 또는 키 회전 후 옛 키 사용 중. "
-                         "새 JSON 키를 발급받아 GCP_CREDENTIALS 에 다시 넣어주세요.")
-        elif 'permission' in err_str.lower() or '403' in err_str:
-            diagnosis = ("권한 부족. 서비스 계정 이메일을 시트 공유 대상에 *편집자* 로 추가했는지 확인하세요.")
-        elif 'not found' in err_str.lower() and '404' in err_str:
-            diagnosis = (f"시트 키({SHEET_KEY[:20]}...) 또는 워크시트 이름이 잘못됐습니다.")
+                         "앱과 봇이 서로 다른 서비스 계정을 쓰고 있을 가능성이 높습니다. "
+                         "Streamlit Secrets 의 client_email 과 봇의 client_email 이 같은지 확인하고, "
+                         "살아있는 계정의 새 JSON 키를 봇 GCP_CREDENTIALS 에 넣어주세요.")
+        elif 'invalid jwt signature' in haystack:
+            diagnosis = ("서비스 계정 키 형식 손상. private_key 의 개행 처리 확인. "
+                         "JSON 파일 통째로 다시 GCP_CREDENTIALS 에 붙여넣으세요.")
+        elif 'invalid_grant' in haystack:
+            diagnosis = ("자격증명 무효. 키가 회전됐거나 계정이 삭제됐습니다. 새 JSON 키 필요.")
+        elif 'permission' in haystack or '403' in haystack:
+            diagnosis = (f"권한 부족. 서비스 계정 ({client_email_short if 'client_email_short' in dir() else '?'}) 을 "
+                         f"시트 공유 대상에 *편집자* 로 추가했는지 확인하세요.")
+        elif 'not found' in haystack and ('404' in haystack or 'sheet' in haystack):
+            diagnosis = (f"시트({SHEET_KEY[:20]}...) 또는 '위대리' 워크시트가 없거나 접근 불가.")
+        elif 'jsondecode' in haystack:
+            diagnosis = ("GCP_CREDENTIALS 가 올바른 JSON 이 아닙니다. JSON 파일 전체 내용을 다시 붙여넣으세요.")
+        elif '필수 필드 누락' in err_str:
+            diagnosis = ("JSON 구조 자체가 망가졌어요. GCP 콘솔에서 새 키를 다운로드해 그대로 붙여넣으세요.")
         else:
-            diagnosis = "위 에러 메시지를 확인하세요."
-        err = f"❌ [위대리 봇] 시트 연결 실패\n\n에러: `{err_str[:300]}`\n\n진단: {diagnosis}"
-        print(err); send_telegram(err); return
+            diagnosis = "아래 에러 타입과 traceback 으로 원인 추정 필요."
+        err = (
+            f"❌ [위대리 봇] 시트 연결 실패\n\n"
+            f"*예외 타입*: `{err_type}`\n"
+            f"*에러*: `{err_str[:200]}`\n"
+            f"*repr*: `{err_repr[:200]}`\n\n"
+            f"*진단*: {diagnosis}"
+        )
+        print(err)
+        print("\n--- Full traceback ---")
+        print(tb)
+        send_telegram(err)
+        return
 
     # A-2. 설정 로드
     _cfg = load_config_from_sheets(sh)
@@ -358,6 +391,16 @@ def main():
         if 'Date' not in df.columns:
             df.rename(columns={'index': 'Date'}, inplace=True)
         df['Date'] = pd.to_datetime(df['Date'])
+        # ── 가드: yfinance 실패/빈 응답 ──────────────────────
+        if df.empty or 'TQQQ' not in df.columns or 'QQQ' not in df.columns:
+            err = (f"❌ [위대리 봇] yfinance 데이터 비어 있음. "
+                   f"rows={len(df)}, columns={list(df.columns)}. "
+                   f"잠시 후 재시도하거나 yfinance rate limit 확인 필요.")
+            print(err); send_telegram(err); return
+        if len(df) < 260:   # 최소 5년치 일별 데이터
+            err = (f"❌ [위대리 봇] 데이터 부족: {len(df)}행 (5년치 미만). "
+                   f"OLS 회귀 불가능.")
+            print(err); send_telegram(err); return
 
         # C. 라이브 가격 — mode 별 분기
         live_tqqq = float(yf.Ticker("TQQQ").fast_info['last_price'])
@@ -505,8 +548,23 @@ def main():
             print("   → 위 로그에서 원인 확인 + BOT_TOKEN/CHAT_ID 환경변수 점검 필요")
 
     except Exception as e:
-        err_msg = f"❌ [위대리 봇 v4.3] 오류 발생: {e}"
+        import traceback
+        tb = traceback.format_exc()
+        err_str  = str(e) or "(빈 메시지)"
+        err_type = type(e).__name__
+        # traceback 마지막 5줄에서 파일·라인 추출 (어느 위치에서 났는지)
+        tb_lines = tb.strip().split('\n')
+        recent_frames = '\n'.join(tb_lines[-6:])
+
+        err_msg = (
+            f"❌ [위대리 봇] 처리 중 오류\n\n"
+            f"*예외 타입*: `{err_type}`\n"
+            f"*에러*: `{err_str[:200]}`\n\n"
+            f"*위치 (최근 frame)*:\n```\n{recent_frames[:600]}\n```"
+        )
         print(err_msg)
+        print("\n--- Full traceback ---")
+        print(tb)
         send_telegram(err_msg)
 
 
