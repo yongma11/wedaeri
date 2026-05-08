@@ -1,20 +1,18 @@
-# wedaeri_bot.py — TQQQ 위대리 오토봇 (v4.2)
+# wedaeri_bot.py — TQQQ 위대리 오토봇 (v4.3)
 # ▸ 주간 Expanding Window OLS (wedaeri_app.py 동일 로직)
 # ▸ W-FRI resample 기반 — 금요일 휴장 주도 정확 처리
 # ▸ 3-티어 시스템 (HIGH / MID / LOW)
-# ▸ F-가드 (변동성 정규화) 추가 — Calmar/Sortino 향상
 # ▸ Google Sheets + Telegram 자동 업데이트
 #
-# v4.2 변경사항 (vs v4.1):
-#   1. 실행 타이밍 가드 보강 — 금요일 pre-market(ET 04:00–09:30) 도 정상 인정
-#      • 사용자가 NYSE 개장 전에 LOC 주문을 준비하는 흐름 지원
-#      • post-close(ET 16:05–토요일 06:00) 도 그대로 정상
-#   2. F-가드: 13주 실현 변동성으로 주문 수량 정규화
-#      • target_vol = 40%/년, size_factor = clip(0.40/realized_vol, 0.5, 1.5)
-#      • 변동성 폭발 시 자동 감속, 잠잠할 때 가속 → Calmar 1.71→1.87
-#   3. 텔레그램 메시지에 size_factor·실현변동성 표시
+# v4.3 변경사항 (vs v4.2):
+#   • F-가드 (변동성 정규화) 제거
+#       — 사용자 실데이터 운용 구간에서 성과 저하 확인됨
+#       — 워크포워드 평균에서는 Calmar 개선이지만 단기 구간에선 변동성 추정 노이즈가 큼
+#       — 향후 충분한 운용 데이터가 쌓이면 재검토 가능
+#   • v4.1 의 버그 수정 + v4.2 의 pre-market 타이밍 가드는 모두 유지
 #
-# v4.1 변경사항(유지):
+# v4.1/v4.2 유지 사항:
+#   • 실행 타이밍 가드 — 금요일 ET 04:00–09:30 (pre-market) + 16:05–토 06:00 (post-close)
 #   • PnL 계산이 Sheets 의 initial_cap 사용 (상수 제거)
 #   • 봇 가상잔고 vs 실잔고 reconciliation
 #   • 주석 +6% 정정
@@ -41,24 +39,17 @@ INITIAL_CAP   = 108_000
 INIT_CASH_PCT = 0.45
 
 PARAMS = {
-    'hc': 0.06, 'lc': -0.06,
+    'hc': 0.06,   # HIGH 기준 Eval ≥ +6%
+    'lc': -0.06,  # LOW  기준 Eval ≤ -6%
     'sH': 2.0, 'sM': 0.4, 'sL': 0.2,
     'bH': 1.0, 'bM': 0.6, 'bL': 2.0,
 }
-
-# ── F-가드: 변동성 정규화 ─────────────────────────────────
-USE_VOL_TARGET = True       # F 가드 on/off
-VOL_LOOKBACK   = 13         # 13주 실현 변동성
-VOL_TARGET     = 0.40       # 연환산 40% 목표
-VOL_FACTOR_MIN = 0.5
-VOL_FACTOR_MAX = 1.5
 
 # ── 실행 타이밍 가드 ─────────────────────────────────────
 # 정상 실행 윈도우 (모두 미국 동부 기준):
 #   ① 금요일 04:00 ~ 09:30  (pre-market: 오늘 LOC 주문 준비)
 #   ② 금요일 16:05 ~ 23:59  (post-close: 마감가로 다음주 신호 확정)
 #   ③ 토요일 00:00 ~ 06:00  (post-close 한국시간 새벽 커버)
-# 그 외 시간은 STRICT_TIMING=True 면 봇 중단.
 STRICT_TIMING = True
 
 # Telegram
@@ -78,7 +69,7 @@ def check_execution_timing() -> tuple[bool, str, str]:
       mode ∈ {'pre_open', 'post_close', 'invalid'}
     """
     et = datetime.now(ZoneInfo("America/New_York"))
-    weekday = et.weekday()           # 0=월, 4=금, 5=토
+    weekday = et.weekday()
     hhmm = et.hour * 60 + et.minute
 
     # ① 금요일 pre-market
@@ -114,6 +105,12 @@ def check_execution_timing() -> tuple[bool, str, str]:
 # 1. Expanding Window OLS
 # ─────────────────────────────────────────────────────────────
 def compute_expanding_ols(qqq_weekly: pd.DataFrame, W: int = 260) -> np.ndarray:
+    """주간 QQQ 시계열로 5년(260주) Expanding Window log-선형 회귀를 계산합니다.
+    - 처음 W주까지는 expanding window (1주씩 확장)
+    - W주 이후에는 고정 260주 슬라이딩 윈도우
+    - 주 순번(t=1,2,3,…)을 독립변수로 사용 (ordinal 날짜보다 수치 안정)
+    - prefix-sum으로 O(n) 연산
+    """
     n = len(qqq_weekly)
     t = np.arange(1, n + 1, dtype=float)
     y = np.log(qqq_weekly['QQQ'].values.astype(float))
@@ -141,23 +138,6 @@ def compute_expanding_ols(qqq_weekly: pd.DataFrame, W: int = 260) -> np.ndarray:
         a = (s_y - b * s_t) / w
         growth[i] = np.exp(a + b * t[i])
     return growth
-
-
-# ─────────────────────────────────────────────────────────────
-# 1-b. F-가드: 13주 실현 변동성 → size_factor
-# ─────────────────────────────────────────────────────────────
-def compute_size_factor(weekly_tqqq: pd.Series) -> tuple[float, float]:
-    """가장 최근 13주 TQQQ 주간 수익률로 연환산 변동성 계산.
-    Returns: (realized_vol, size_factor)
-    """
-    if len(weekly_tqqq) < VOL_LOOKBACK + 1:
-        return float('nan'), 1.0   # 데이터 부족 시 정규화 안 함
-    rets = weekly_tqqq.pct_change().dropna().tail(VOL_LOOKBACK)
-    rv   = float(rets.std()) * np.sqrt(52)
-    if rv <= 0 or np.isnan(rv):
-        return rv, 1.0
-    sf = float(np.clip(VOL_TARGET / rv, VOL_FACTOR_MIN, VOL_FACTOR_MAX))
-    return rv, sf
 
 
 # ─────────────────────────────────────────────────────────────
@@ -189,6 +169,9 @@ def load_config_from_sheets(sh) -> dict:
 
 
 def apply_sheets_config(cfg, start_date, initial_cap, init_cash_pct, params):
+    """Sheets에서 읽은 설정을 실제 변수에 반영합니다.
+    use_volF 키는 v4.3 에서 무시 — F-가드 코드 자체가 제거됨.
+    """
     if not cfg:
         return start_date, initial_cap, init_cash_pct, params
 
@@ -212,6 +195,11 @@ def apply_sheets_config(cfg, start_date, initial_cap, init_cash_pct, params):
     print(f"   hc={new_params['hc']:.0%} / lc={new_params['lc']:.0%}")
     print(f"   매도 H/M/L: {new_params['sH']}/{new_params['sM']}/{new_params['sL']}")
     print(f"   매수 H/M/L: {new_params['bH']}/{new_params['bM']}/{new_params['bL']}")
+
+    # use_volF 키가 시트에 있으면 안내만 출력 (실제로는 무시됨)
+    if 'use_volF' in cfg:
+        print(f"   ℹ️ use_volF={cfg['use_volF']} 시트에 있으나 v4.3 봇은 F-가드 미적용")
+
     return new_start, new_cap, new_cash_pct, new_params
 
 
@@ -219,6 +207,10 @@ def apply_sheets_config(cfg, start_date, initial_cap, init_cash_pct, params):
 # 3-b. Reconciliation
 # ─────────────────────────────────────────────────────────────
 def load_actual_balance(sh) -> dict:
+    """
+    '실잔고' 시트에서 가장 최근 행을 읽어 실제 증권사 잔고를 반환합니다.
+    시트 형식 (header):  date | shares | cash | total
+    """
     try:
         ws = sh.worksheet("실잔고")
         records = ws.get_all_records()
@@ -264,7 +256,7 @@ def get_tier(eval_val, hc, lc):
 # 5. 메인
 # ─────────────────────────────────────────────────────────────
 def main():
-    print("🚀 [위대리] 오토봇 v4.2 가동 시작...")
+    print("🚀 [위대리] 오토봇 v4.3 가동 시작...")
 
     # 0. 타이밍 가드
     ok_timing, timing_msg, mode = check_execution_timing()
@@ -315,7 +307,7 @@ def main():
 
         if mode == 'pre_open':
             # pre-market: live 값은 어제(목요일) 종가 — df 가 이미 그걸 가지고 있음
-            # 별도 행 추가 안 함. cur_p 는 df 의 마지막 종가(목요일).
+            # cur_p 는 df 의 마지막 종가(목요일).
             cur_p = round(float(df['TQQQ'].iloc[-1]), 2)
         else:  # post_close
             live_date = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
@@ -347,13 +339,7 @@ def main():
             msg = "⚠️ [위대리] 시뮬레이션 데이터 부족 (시작일 이후 데이터 < 2주)"
             print(msg); send_telegram(msg); return
 
-        # G. F-가드: size_factor 계산 (sim 의 마지막 13주 기준)
-        if USE_VOL_TARGET:
-            realized_vol, size_factor = compute_size_factor(sim['TQQQ'])
-        else:
-            realized_vol, size_factor = float('nan'), 1.0
-
-        # H. 초기 잔고
+        # G. 초기 잔고
         init_stock_ratio = 1.0 - init_cash_pct
         init_price       = float(sim.loc[0, 'TQQQ'])
         shares           = int((initial_cap * init_stock_ratio) / init_price)
@@ -363,29 +349,20 @@ def main():
         sell_r = {'HIGH': params['sH'], 'MID': params['sM'], 'LOW': params['sL']}
         buy_r  = {'HIGH': params['bH'], 'MID': params['bM'], 'LOW': params['bL']}
 
-        # I. 과거 매매 복기 — 같은 size_factor 적용 (지금 시점 변동성 기준)
-        # 주의: 정확히는 매주 시점의 size_factor 가 이상이지만,
-        #       사용자가 매주 봇을 돌릴 때 그 주의 size_factor 만 적용되므로
-        #       복기 시에도 매 주의 그 시점 변동성으로 size_factor 를 따로 계산
+        # H. 과거 매매 복기 (시작일+1 ~ 마지막 주 직전)
         for i in range(1, len(sim) - 1):
             p, prev_p, ev = float(sim.loc[i,'TQQQ']), float(sim.loc[i-1,'TQQQ']), float(sim.loc[i,'Eval'])
             tier = get_tier(ev, hc, lc)
             diff = shares * (p - prev_p)
 
-            # 그 시점의 size_factor 를 별도 계산 (sim 누적 데이터 기준)
-            if USE_VOL_TARGET and i >= VOL_LOOKBACK:
-                _, sf_i = compute_size_factor(sim['TQQQ'].iloc[:i+1])
-            else:
-                sf_i = 1.0
-
             if diff > 0 and shares > 0:
-                qty = int(min(round(diff * sell_r[tier] * sf_i / p), shares))
+                qty = int(min(round(diff * sell_r[tier] / p), shares))
                 shares -= qty; cash += qty * p
             elif diff < 0:
-                qty = int(min(cash, abs(diff) * buy_r[tier] * sf_i) / p)
+                qty = int(min(cash, abs(diff) * buy_r[tier]) / p)
                 shares += qty; cash -= qty * p
 
-        # J. 이번 주 신호
+        # I. 이번 주 신호
         last  = sim.iloc[-1]; prev = sim.iloc[-2]
         last_eval  = float(last['Eval'])
         last_price = float(last['TQQQ'])
@@ -396,14 +373,14 @@ def main():
         action, order_qty = "관망", 0
         if diff_now > 0 and shares > 0:
             action    = "매도"
-            order_qty = int(min(round(diff_now * sell_r[this_tier] * size_factor / last_price), shares))
+            order_qty = int(min(round(diff_now * sell_r[this_tier] / last_price), shares))
         elif diff_now < 0:
             action    = "매수"
-            order_qty = int(min(cash, abs(diff_now) * buy_r[this_tier] * size_factor) / last_price)
+            order_qty = int(min(cash, abs(diff_now) * buy_r[this_tier]) / last_price)
         if order_qty == 0:
             action = "관망"
 
-        # K. 자산
+        # J. 자산
         if action == "매도":
             est_shares, est_cash = shares - order_qty, cash + order_qty * cur_p
         elif action == "매수":
@@ -412,25 +389,26 @@ def main():
             est_shares, est_cash = shares, cash
 
         total_asset = est_cash + est_shares * cur_p
-        pnl_pct  = (total_asset / initial_cap - 1) * 100   # ✅ Sheets 의 initial_cap 사용
+        # ✅ Sheets 의 initial_cap 사용 (v4.1 버그 수정)
+        pnl_pct  = (total_asset / initial_cap - 1) * 100
         cash_pct = est_cash / total_asset * 100 if total_asset > 0 else 0
         recon_msg = reconcile(est_shares, est_cash, actual_balance, initial_cap)
 
-        # L. Sheets 업데이트
+        # K. Sheets 업데이트
         ws.update_acell('L4', action)
         ws.update_acell('M4', 'LOC' if action != "관망" else "-")
         ws.update_acell('N4', cur_p)
         ws.update_acell('O4', order_qty)
         print(f"📤 시트 업데이트: {action} {order_qty}주 @ ${cur_p}")
 
-        # M. Telegram
+        # L. Telegram
         tier_emoji   = {'HIGH':'🟡','MID':'🔵','LOW':'🟢'}[this_tier]
         action_emoji = {'매도':'📈','매수':'📉','관망':'⏸'}[action]
         mode_label   = {'pre_open':'Pre-market (오늘 LOC 준비)',
                         'post_close':'Post-close (마감가 확정)'}.get(mode, '')
         today_str = datetime.now().strftime('%Y-%m-%d %H:%M')
         msg = (
-            f"🚀 *[위대리 v4.2] 주간 시그널* ({today_str})\n"
+            f"🚀 *[위대리 v4.3] 주간 시그널* ({today_str})\n"
             f"📡 모드: {mode_label}\n\n"
             f"💰 *자산 현황 (주문 체결 후 예상)*\n"
             f"  총 자산 : `${total_asset:>12,.2f}`  ({pnl_pct:+.2f}%)\n"
@@ -438,17 +416,8 @@ def main():
             f"  보유 현금: `${est_cash:>12,.2f}`  (현금 {cash_pct:.1f}%)\n\n"
             f"🌡️ *시장 평가* : {tier_emoji} `{last_eval:.2%}`  ({this_tier})\n"
             f"  QQQ 추세 대비 {abs(last_eval):.1%} "
-            f"{'고평가' if last_eval >= hc else ('저평가' if last_eval <= lc else '중립')}\n"
-        )
-        if USE_VOL_TARGET:
-            msg += (
-                f"📊 *F-가드 (변동성 정규화)*\n"
-                f"  실현 변동성 (13주, 연환산): `{realized_vol:.1%}`\n"
-                f"  목표 변동성: `{VOL_TARGET:.0%}` → size factor: `{size_factor:.2f}×`\n"
-                f"  (신호 수량이 변동성에 따라 자동 조절됨)\n"
-            )
-        msg += (
-            f"\n🎯 *이번 주 LOC 주문*\n"
+            f"{'고평가' if last_eval >= hc else ('저평가' if last_eval <= lc else '중립')}\n\n"
+            f"🎯 *이번 주 LOC 주문*\n"
             f"  {action_emoji} 상태       : *{action}*\n"
             f"  📦 주문 수량   : *{order_qty}* 주\n"
             f"  💲 기준 가격   : `${cur_p}`\n"
@@ -468,7 +437,7 @@ def main():
         print("✅ Telegram 발송 완료")
 
     except Exception as e:
-        err_msg = f"❌ [위대리 봇 v4.2] 오류 발생: {e}"
+        err_msg = f"❌ [위대리 봇 v4.3] 오류 발생: {e}"
         print(err_msg)
         send_telegram(err_msg)
 
