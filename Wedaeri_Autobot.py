@@ -311,7 +311,8 @@ def main():
     # A. GCP 인증
     creds_raw = os.environ.get('GCP_CREDENTIALS')
     if not creds_raw:
-        print("❌ GCP_CREDENTIALS 환경변수가 없습니다."); return
+        err = "❌ [위대리 봇] GCP_CREDENTIALS 환경변수 없음. 봇 종료."
+        print(err); send_telegram(err); return
     try:
         creds_dict = json.loads(creds_raw)
         if 'private_key' in creds_dict:
@@ -320,7 +321,23 @@ def main():
         sh = gc.open_by_key(SHEET_KEY)
         ws = sh.worksheet("위대리")
     except Exception as e:
-        print(f"❌ 시트 연결 실패: {e}"); return
+        err_str = str(e)
+        # 자주 발생하는 케이스별 친절한 진단 메시지
+        if 'account not found' in err_str.lower():
+            diagnosis = ("서비스 계정이 GCP 에 존재하지 않습니다. "
+                         "앱과 봇이 *서로 다른* 서비스 계정을 쓰고 있을 가능성이 높습니다. "
+                         "GCP Console 에서 살아있는 계정의 JSON 키를 봇 환경변수 GCP_CREDENTIALS 에 다시 넣어주세요.")
+        elif 'invalid jwt signature' in err_str.lower() or 'invalid_grant' in err_str.lower():
+            diagnosis = ("서비스 계정 키가 무효합니다. private_key 형식 손상 또는 키 회전 후 옛 키 사용 중. "
+                         "새 JSON 키를 발급받아 GCP_CREDENTIALS 에 다시 넣어주세요.")
+        elif 'permission' in err_str.lower() or '403' in err_str:
+            diagnosis = ("권한 부족. 서비스 계정 이메일을 시트 공유 대상에 *편집자* 로 추가했는지 확인하세요.")
+        elif 'not found' in err_str.lower() and '404' in err_str:
+            diagnosis = (f"시트 키({SHEET_KEY[:20]}...) 또는 워크시트 이름이 잘못됐습니다.")
+        else:
+            diagnosis = "위 에러 메시지를 확인하세요."
+        err = f"❌ [위대리 봇] 시트 연결 실패\n\n에러: `{err_str[:300]}`\n\n진단: {diagnosis}"
+        print(err); send_telegram(err); return
 
     # A-2. 설정 로드
     _cfg = load_config_from_sheets(sh)
