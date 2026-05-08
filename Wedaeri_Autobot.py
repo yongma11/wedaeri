@@ -153,16 +153,47 @@ def compute_expanding_ols(qqq_weekly: pd.DataFrame, W: int = 260) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────
 # 2. Telegram
 # ─────────────────────────────────────────────────────────────
-def send_telegram(text: str) -> None:
-    if not BOT_TOKEN or not CHAT_ID:
-        print("⚠️ Telegram BOT_TOKEN/CHAT_ID 미설정 — 발송 스킵"); return
+def send_telegram(text: str) -> bool:
+    """텔레그램 메시지 발송. 성공/실패를 명시적으로 로그.
+    Returns: 발송 성공 여부 (True/False)
+    """
+    if not BOT_TOKEN:
+        print("🔴 Telegram 발송 실패: BOT_TOKEN 환경변수 없음"); return False
+    if not CHAT_ID:
+        print("🔴 Telegram 발송 실패: CHAT_ID 환경변수 없음"); return False
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={
+        r = requests.post(url, json={
             "chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"
         }, timeout=10)
-    except Exception:
-        pass
+        # 텔레그램 API 응답 상태 검증
+        if r.status_code != 200:
+            print(f"🔴 Telegram API 에러 {r.status_code}: {r.text[:300]}")
+            # Markdown 파싱 에러일 가능성 → plain text 로 재시도
+            if r.status_code == 400 and 'parse' in r.text.lower():
+                print("   ↻ Markdown 제거하고 plain text 로 재시도...")
+                r2 = requests.post(url, json={
+                    "chat_id": CHAT_ID, "text": text
+                }, timeout=10)
+                if r2.status_code == 200:
+                    print("   ✅ plain text 발송 성공"); return True
+                else:
+                    print(f"   🔴 재시도도 실패: {r2.status_code} {r2.text[:200]}")
+            return False
+        try:
+            j = r.json()
+            if not j.get('ok', False):
+                print(f"🔴 Telegram API ok=false: {j.get('description','')}")
+                return False
+        except Exception:
+            pass
+        print(f"✅ Telegram 발송 OK ({len(text)} chars)")
+        return True
+    except requests.Timeout:
+        print("🔴 Telegram 발송 실패: 타임아웃 (10초)"); return False
+    except Exception as e:
+        print(f"🔴 Telegram 발송 실패 (예외): {type(e).__name__}: {e}")
+        return False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -449,8 +480,12 @@ def main():
         else:
             msg += "  → 이번 주 주문 없음 (관망)\n"
 
-        send_telegram(msg)
-        print("✅ Telegram 발송 완료")
+        ok_send = send_telegram(msg)
+        if ok_send:
+            print("✅ 모든 작업 완료 (Sheets + Telegram)")
+        else:
+            print("⚠️ Sheets 는 업데이트됐지만 Telegram 발송 실패")
+            print("   → 위 로그에서 원인 확인 + BOT_TOKEN/CHAT_ID 환경변수 점검 필요")
 
     except Exception as e:
         err_msg = f"❌ [위대리 봇 v4.3] 오류 발생: {e}"
