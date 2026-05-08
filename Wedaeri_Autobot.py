@@ -41,7 +41,7 @@ INIT_CASH_PCT = 0.45
 PARAMS = {
     'hc': 0.06,   # HIGH 기준 Eval ≥ +6%
     'lc': -0.06,  # LOW  기준 Eval ≤ -6%
-    'sH': 2.0, 'sM': 0.4, 'sL': 0.2,
+    'sH': 2.0, 'sM': 0.3, 'sL': 0.2,
     'bH': 1.0, 'bM': 0.6, 'bL': 2.0,
 }
 
