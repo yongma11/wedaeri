@@ -47,9 +47,10 @@ PARAMS = {
 
 # ── 실행 타이밍 가드 ─────────────────────────────────────
 # 정상 실행 윈도우 (모두 미국 동부 기준):
-#   ① 금요일 04:00 ~ 09:30  (pre-market: 오늘 LOC 주문 준비)
-#   ② 금요일 16:05 ~ 23:59  (post-close: 마감가로 다음주 신호 확정)
-#   ③ 토요일 00:00 ~ 06:00  (post-close 한국시간 새벽 커버)
+#   ① 금요일 04:00 ~ 09:30  (pre-market: 어제 종가 기준, 오늘 LOC 주문 준비)
+#   ② 금요일 15:00 ~ 16:05  (near-close: 거의 마감가로 즉시 LOC 주문, KST 토 04:00~05:05)
+#   ③ 금요일 16:05 ~ 23:59  (post-close: 마감가로 다음주 신호 확정)
+#   ④ 토요일 00:00 ~ 06:00  (post-close 한국시간 새벽 커버)
 STRICT_TIMING = True
 
 # Telegram
@@ -66,7 +67,7 @@ print(f"🔍 ENV CHECK: BOT_TOKEN={'있음(' + str(len(BOT_TOKEN)) + '자)' if B
 def check_execution_timing() -> tuple[bool, str, str]:
     """
     Returns: (정상여부, 메시지, mode)
-      mode ∈ {'pre_open', 'post_close', 'invalid'}
+      mode ∈ {'pre_open', 'near_close', 'post_close', 'invalid'}
     """
     et = datetime.now(ZoneInfo("America/New_York"))
     weekday = et.weekday()
@@ -79,14 +80,22 @@ def check_execution_timing() -> tuple[bool, str, str]:
             f"   목요일 종가 기준 신호 → 오늘 LOC 주문 준비"
         ), 'pre_open'
 
-    # ② 금요일 post-close
+    # ② 금요일 near-close (마감 직전 1시간 5분)
+    if weekday == 4 and 15 * 60 <= hhmm < 16 * 60 + 5:
+        mins_to_close = max(0, 16 * 60 - hhmm)
+        return True, (
+            f"✅ Near-close 모드: ET {et:%Y-%m-%d %H:%M} (마감 {mins_to_close}분 전)\n"
+            f"   장중 실시간 가격 ≈ 마감가, 즉시 LOC 주문 권장"
+        ), 'near_close'
+
+    # ③ 금요일 post-close
     if weekday == 4 and hhmm >= 16 * 60 + 5:
         return True, (
             f"✅ Post-close 모드: ET {et:%Y-%m-%d %H:%M} (금요일 마감 후)\n"
             f"   금요일 종가 기준 신호 확정"
         ), 'post_close'
 
-    # ③ 토요일 새벽 (post-close 연장)
+    # ④ 토요일 새벽 (post-close 연장)
     if weekday == 5 and hhmm < 6 * 60:
         return True, (
             f"✅ Post-close 모드: ET {et:%Y-%m-%d %H:%M} (토요일 새벽)"
@@ -96,6 +105,7 @@ def check_execution_timing() -> tuple[bool, str, str]:
         f"⚠️ 비정상 타이밍: ET {et:%Y-%m-%d %H:%M} (요일={weekday}). "
         f"정상 실행 시간:\n"
         f"  • 금요일 ET 04:00~09:30 (pre-market, KST 17:00~22:30)\n"
+        f"  • 금요일 ET 15:00~16:05 (near-close, KST 토 04:00~05:05)\n"
         f"  • 금요일 ET 16:05~23:59 (post-close, KST 토 05:05~12:59)\n"
         f"  • 토요일 ET 00:00~06:00 (post-close 연장)"
     ), 'invalid'
@@ -309,7 +319,9 @@ def main():
             # pre-market: live 값은 어제(목요일) 종가 — df 가 이미 그걸 가지고 있음
             # cur_p 는 df 의 마지막 종가(목요일).
             cur_p = round(float(df['TQQQ'].iloc[-1]), 2)
-        else:  # post_close
+        else:  # near_close 또는 post_close — 둘 다 오늘 가격을 사용
+            # near_close: live_tqqq 는 장중 실시간 가격 (마감가에 매우 근접)
+            # post_close: live_tqqq 는 정식 마감가
             live_date = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
             if live_date > df['Date'].iloc[-1]:
                 df = pd.concat([df, pd.DataFrame({
@@ -404,7 +416,8 @@ def main():
         # L. Telegram
         tier_emoji   = {'HIGH':'🟡','MID':'🔵','LOW':'🟢'}[this_tier]
         action_emoji = {'매도':'📈','매수':'📉','관망':'⏸'}[action]
-        mode_label   = {'pre_open':'Pre-market (오늘 LOC 준비)',
+        mode_label   = {'pre_open':'Pre-market (어제 종가 기준, 오늘 LOC 준비)',
+                        'near_close':'Near-close (마감 직전, 즉시 LOC 권장)',
                         'post_close':'Post-close (마감가 확정)'}.get(mode, '')
         today_str = datetime.now().strftime('%Y-%m-%d %H:%M')
         msg = (
@@ -425,8 +438,11 @@ def main():
             f"{recon_msg}\n"
         )
         if action != "관망":
+            urgency = ("⚡ *지금 즉시* MTS 에서 LOC 주문 입력 (마감까지 시간 적음)\n"
+                       if mode == 'near_close' else "")
             msg += (
                 f"📱 *MTS 실행 방법*\n"
+                f"  {urgency}"
                 f"  → `{action} {order_qty}주` LOC로 예약\n"
                 f"  → 금요일 장 마감 직전 체결\n"
             )
