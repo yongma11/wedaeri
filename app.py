@@ -29,7 +29,7 @@ DEFAULT_CONFIG = {
     'bt_cash':    45,
     'bt_start':   '2010-01-01',
     'hc':  6.0,   'lc': -6.0,
-    'sH':  2.0,   'sM':  0.4,   'sL': 0.2,
+    'sH':  2.0,   'sM':  0.3,   'sL': 0.2,
     'bH':  1.0,   'bM':  0.6,   'bL': 2.0,
 }
 def load_config() -> dict:
@@ -324,7 +324,7 @@ def inject_live_price(df: pd.DataFrame) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────
 def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                     hc=0.06, lc=-0.06,
-                    sH=2.0, sM=0.4, sL=0.2,
+                    sH=2.0, sM=0.3, sL=0.2,
                     bH=1.0, bM=0.6, bL=2.0):
     sim  = data[data['Date'] >= pd.to_datetime(start_dt)].copy()
     wkly = (sim.set_index('Date')[['TQQQ', 'Eval']]
@@ -374,7 +374,7 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
 # ─────────────────────────────────────────────────────────────
 def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                       hc=0.06, lc=-0.06,
-                      sH=2.0,  sM=0.4,  sL=0.2,
+                      sH=2.0,  sM=0.3,  sL=0.2,
                       bH=1.0,  bM=0.6,  bL=2.0,
                       start_date=None):
     wkly = (data.set_index('Date')[['TQQQ', 'Eval']]
@@ -532,7 +532,7 @@ with tab2:
             key='p_preset',
         )
         PRESETS = {
-            "최적화": dict(hc=0.06, lc=-0.06, sH=2.0, sM=0.4,  sL=0.2,  bH=1.0, bM=0.6, bL=2.0),
+            "최적화": dict(hc=0.06, lc=-0.06, sH=2.0, sM=0.3,  sL=0.2,  bH=1.0, bM=0.6, bL=2.0),
             "안정형": dict(hc=0.06, lc=-0.10, sH=2.0, sM=0.6,  sL=0.33, bH=1.0, bM=1.0, bL=2.0),
         }
         key_map = {"🏆 최적화": "최적화", "🛡️ 안정형": "안정형"}
@@ -614,7 +614,7 @@ with tab2:
         bt_opt = run_full_backtest(
             df, bt_cap, bt_cash_ratio,
             hc=0.06, lc=-0.06,
-            sH=2.0, sM=0.4, sL=0.2,
+            sH=2.0, sM=0.3, sL=0.2,
             bH=1.0, bM=0.6, bL=2.0,
             start_date=bt_start_date,
         )
