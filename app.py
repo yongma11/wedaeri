@@ -1,10 +1,15 @@
-# wedaeri_app.py — TQQQ 위대리 v4.3
+# wedaeri_app.py — TQQQ 위대리 v4.7
 # Tab1: 실전 트레이딩 | Tab2: 백테스트 분석 | Tab3: 전략 로직
 #
-# v4.3 변경사항:
-#   • F-가드(변동성 정규화) 완전 제거 — 사용자 실데이터 운용 구간에서 성과 저하 확인됨
-#   • 봇과 일관성 유지를 위해 앱에서도 동일하게 제거
-#   • UI / 백테스트 / Tab3 해설 모두 v4.0 형태로 환원
+# v4.7 변경사항:
+#   • Tab 2 UI 단순화 — 초기자본/시작일/종료일 3개만 설정 (파라미터는 최적화 고정)
+#   • 양도세 인출 전략 재정의 — A=1월/5월(기본), B=5월, C=1월
+#   • 매도-only 리밸런싱(옵션 B) 기본 — 강제 매수 제거로 시장 타이밍 손실 방지
+#   • 누적자산 곡선만 유지 — 낙폭/Eval/주간수익률 차트 제거
+#   • 3-way 비교 → 위대리 vs B&H 2-way
+#   • 연도별 차트 음수=빨강, 차트-제목 겹침 해소
+#   • 매매 로그 행 제한 제거 (전체 표시)
+#   • Tab 3 전략 로직 v4.7 반영
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -25,9 +30,9 @@ DEFAULT_CONFIG = {
     'start_date': '2025-12-26',
     'cap':        108000,
     'cash':       45,
-    'bt_cap':     20000,
+    'bt_cap':     10000,
     'bt_cash':    45,
-    'bt_start':   '2010-01-01',
+    'bt_start':   '2017-01-01',
     'hc':  6.0,   'lc': -6.0,
     'sH':  2.0,   'sM':  0.3,   'sL': 0.2,
     'bH':  1.0,   'bM':  0.6,   'bL': 2.0,
@@ -134,7 +139,7 @@ def save_config_to_sheets(cfg: dict) -> tuple[bool, str]:
 # ─────────────────────────────────────────────────────────────
 # 1. 페이지 설정 & 스타일
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="위대리 Quantum T-Flow v4.3", layout="wide")
+st.set_page_config(page_title="위대리 Quantum T-Flow v4.7", layout="wide")
 st.markdown("""
 <style>
 [data-testid="stSidebar"] { background-color: #f8f9fa; border-right: 1px solid #dee2e6; }
@@ -155,12 +160,6 @@ st.markdown("""
 # ─────────────────────────────────────────────────────────────
 # session_state 초기화
 # ─────────────────────────────────────────────────────────────
-PRESET_OPTIONS = [
-    "🏆 최적화 파라미터 (CAGR ~43%, MDD ~31%)",
-    "🛡️ 안정형 파라미터 (CAGR ~36%, MDD ~24%)",
-    "✏️ 직접 설정",
-]
-PRESET_CUSTOM = "✏️ 직접 설정"
 if '_cfg_loaded' not in st.session_state:
     _cfg = load_config()
     ss   = st.session_state
@@ -179,8 +178,6 @@ if '_cfg_loaded' not in st.session_state:
     ss['p_bH']      = _cfg['bH']
     ss['p_bM']      = _cfg['bM']
     ss['p_bL']      = _cfg['bL']
-    ss['p_preset']     = PRESET_CUSTOM
-    ss['_last_preset'] = None
 # ─────────────────────────────────────────────────────────────
 # 차트 공통 레이아웃
 # ─────────────────────────────────────────────────────────────
@@ -414,10 +411,9 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
 # 양도세 인출 전략 — (월, 비율) 의 리스트
 # 각 entry: 그 해 1월 1일 이후 첫 해당 월의 첫 주간 마감일에 그 비율만큼 납부
 TAX_SCHEDULES = {
-    'D': {'name': '1월 일괄',           'pattern': [(1, 1.00)]},
-    'A': {'name': '1월/5월 50/50',       'pattern': [(1, 0.50), (5, 0.50)]},
-    'B': {'name': '4월 일괄',           'pattern': [(4, 1.00)]},
-    'C': {'name': '1월/3월/5월 33/33/34', 'pattern': [(1, 0.33), (3, 0.33), (5, 0.34)]},
+    'A': {'name': '1월/5월 50/50',  'pattern': [(1, 0.50), (5, 0.50)]},
+    'B': {'name': '5월 일괄',       'pattern': [(5, 1.00)]},
+    'C': {'name': '1월 일괄',       'pattern': [(1, 1.00)]},
 }
 def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                       hc=0.06, lc=-0.06,
@@ -431,17 +427,18 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                       tax_deduction_usd=1923.0,    # ≈ ₩2.5M / 1300
                       tax_rate=0.22,
                       tax_rebalance=True,
-                      tax_strategy='D'):
+                      tax_strategy='A'):
     """위대리 전략 백테스트 (수수료 + 양도세 옵션 포함).
 
     apply_commission=True 면 매수/매도마다 수수료 차감.
     apply_tax=True 면 직전 연도 실현이익에 대한 양도세를
        tax_strategy 에 따라 분할/일괄 납부:
-         'D' = 1월 일괄
-         'A' = 1월/5월 50/50
-         'B' = 4월 일괄
-         'C' = 1월/3월/5월 33/33/34
-       (tax_rebalance=True 면) 매 납부 직후 cash_ratio 로 리밸런싱.
+         'A' = 1월/5월 50/50 (기본)
+         'B' = 5월 일괄
+         'C' = 1월 일괄
+       tax_rebalance=True 면 *매도-only 리밸런싱* (옵션 B):
+         납부 후 cash 가 목표 비중보다 부족할 때만 stock 을 일부 매도해
+         cash 를 보충. cash 가 과다해도 강제 매수는 *안 함* (시장 타이밍 회피).
     """
     wkly = (data.set_index('Date')[['TQQQ', 'Eval']]
                 .resample('W-FRI').last()
@@ -476,7 +473,7 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
     tax_events         = []     # 정산 이벤트 로그
     year_of_last_bar   = pd.Timestamp(dates[0]).year
     pending_payments   = []     # 대기 중인 분할 납부 큐
-    schedule_pattern   = TAX_SCHEDULES.get(tax_strategy, TAX_SCHEDULES['D'])['pattern']
+    schedule_pattern   = TAX_SCHEDULES.get(tax_strategy, TAX_SCHEDULES['A'])['pattern']
     trade_log          = []     # 매주 매매 이벤트 로그
 
     def _sell(qty, price, year, mark_realized=True):
@@ -645,22 +642,19 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                                   if False else
                                   f"{pay['orig_amount']:.0f} ({tax_strategy})",
                 })
-                # 매 납부 직후 리밸런싱
+                # 옵션 B (매도-only 리밸런싱): 강제 매수는 하지 않음
                 if tax_rebalance:
                     remaining = cash + shares * p
                     target_cash = remaining * cash_ratio
-                    if cash > target_cash:
-                        excess = cash - target_cash
-                        qty = int(excess / (p * (1 + comm_buy if apply_commission else 1))) \
-                              if apply_commission else int(excess / p)
-                        _buy(qty, p)
-                    elif cash < target_cash:
+                    if cash < target_cash:
+                        # cash 부족 → 일부 매도해서 cash 보충
                         d2 = target_cash - cash
                         eff_p = p * (1 - comm_sell) if apply_commission else p
                         sq = int(np.ceil(d2 / eff_p)) if eff_p > 0 else 0
                         sq = min(sq, shares)
                         if sq > 0:
                             _sell(sq, p, cur_year, mark_realized=True)
+                    # cash > target → 매수 안 함 (전략이 다음 주부터 자연스럽게 조정)
             pending_payments = still_pending
 
         eq[i] = cash + shares * p
@@ -746,7 +740,7 @@ latest_eval  = float(eval_series.iloc[-1]) if not eval_series.empty else 0.0
 _hc_rt = _ss.get('p_hc', DEFAULT_CONFIG['hc']) / 100
 _lc_rt = _ss.get('p_lc', DEFAULT_CONFIG['lc']) / 100
 latest_tier  = 'HIGH' if latest_eval >= _hc_rt else ('LOW' if latest_eval <= _lc_rt else 'MID')
-st.title("🚀 TQQQ [위대리] v4.3 : 균형형 트레이딩 시스템")
+st.title("🚀 TQQQ [위대리] v4.7 : 균형형 트레이딩 시스템")
 tab1, tab2, tab3 = st.tabs(["🔥 실전 트레이딩", "📊 백테스트 분석", "📘 전략 로직"])
 # ═══════════════════════════════════════════════════════════════
 # TAB 1 — 실전 트레이딩
@@ -791,88 +785,32 @@ with tab1:
 with tab2:
     st.subheader("📊 위대리 전략 전체 기간 백테스트")
     st.caption("TQQQ 상장 첫 주(2010년 2월)부터 현재까지의 전략 시뮬레이션")
-    with st.expander("⚙️ 백테스트 파라미터 설정", expanded=True):
-        preset = st.selectbox(
-            "파라미터 프리셋 선택",
-            PRESET_OPTIONS,
-            key='p_preset',
+    # 최적화 파라미터 고정 사용 (사용자가 변경할 일 없음)
+    OPT_PARAMS = dict(hc=0.06, lc=-0.06, sH=2.0, sM=0.3, sL=0.2, bH=1.0, bM=0.6, bL=2.0)
+    bt_hc, bt_lc = OPT_PARAMS['hc'], OPT_PARAMS['lc']
+    bt_sH, bt_sM, bt_sL = OPT_PARAMS['sH'], OPT_PARAMS['sM'], OPT_PARAMS['sL']
+    bt_bH, bt_bM, bt_bL = OPT_PARAMS['bH'], OPT_PARAMS['bM'], OPT_PARAMS['bL']
+    bt_cash_ratio = 0.45   # 초기 현금 비중 고정 45%
+
+    with st.container(border=True):
+        st.markdown("**⚙️ 백테스트 설정**")
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            bt_cap = st.number_input("초기 자본 ($)", value=10_000, step=1000,
+                                     key='p_bt_cap')
+        with col_b:
+            bt_start_date = st.date_input(
+                "검증 시작일",
+                value=datetime.strptime("2017-01-01", "%Y-%m-%d").date(),
+                key='p_bt_start')
+        with col_c:
+            bt_end_date = st.date_input(
+                "검증 종료일", value=datetime.now().date(),
+                key='p_bt_end')
+        st.caption(
+            f"전략 파라미터: 최적화 기본값 고정 "
+            f"(hc=±6%, 매도 H/M/L = 2.0/0.3/0.2, 매수 H/M/L = 1.0/0.6/2.0, 초기 현금 45%)"
         )
-        PRESETS = {
-            "최적화": dict(hc=0.06, lc=-0.06, sH=2.0, sM=0.3,  sL=0.2,  bH=1.0, bM=0.6, bL=2.0),
-            "안정형": dict(hc=0.06, lc=-0.10, sH=2.0, sM=0.6,  sL=0.33, bH=1.0, bM=1.0, bL=2.0),
-        }
-        key_map = {"🏆 최적화": "최적화", "🛡️ 안정형": "안정형"}
-        pkey    = next((v for k, v in key_map.items() if k in preset), None)
-        _ss = st.session_state
-        if pkey and _ss.get('_last_preset') != pkey:
-            _ss['_last_preset'] = pkey
-            v = PRESETS[pkey]
-            _ss['p_hc'] = v['hc'] * 100
-            _ss['p_lc'] = v['lc'] * 100
-            _ss['p_sH'] = v['sH']
-            _ss['p_sM'] = v['sM']
-            _ss['p_sL'] = v['sL']
-            _ss['p_bH'] = v['bH']
-            _ss['p_bM'] = v['bM']
-            _ss['p_bL'] = v['bL']
-        P_DEF = PRESETS[pkey] if pkey else {
-            'hc': _ss.get('p_hc', DEFAULT_CONFIG['hc']) / 100,
-            'lc': _ss.get('p_lc', DEFAULT_CONFIG['lc']) / 100,
-            'sH': _ss.get('p_sH', DEFAULT_CONFIG['sH']),
-            'sM': _ss.get('p_sM', DEFAULT_CONFIG['sM']),
-            'sL': _ss.get('p_sL', DEFAULT_CONFIG['sL']),
-            'bH': _ss.get('p_bH', DEFAULT_CONFIG['bH']),
-            'bM': _ss.get('p_bM', DEFAULT_CONFIG['bM']),
-            'bL': _ss.get('p_bL', DEFAULT_CONFIG['bL']),
-        }
-        p1, p2, p3 = st.columns(3)
-        with p1:
-            st.markdown("**기본 설정**")
-            bt_start_date = st.date_input("백테스트 시작일", key='p_bt_start')
-            bt_cap        = st.number_input("초기 자본 ($)", value=20_000, step=1000, key='p_bt_cap')
-            bt_cash_ratio = st.slider("초기 현금 비중 (%)", 0, 100, key='p_bt_cash') / 100
-            st.markdown("**시장 평가 기준**")
-            bt_hc = st.slider("HIGH 기준 Eval ≥ (%)", 1.0, 20.0,
-                               float(P_DEF['hc']*100), 0.5, key='p_hc') / 100
-            bt_lc = st.slider("LOW 기준  Eval ≤ (%)", -20.0, -1.0,
-                               float(P_DEF['lc']*100), 0.5, key='p_lc') / 100
-        with p2:
-            st.markdown("**매도 배율** (상승 시 차익실현 강도)")
-            bt_sH = st.slider("매도 HIGH ×", 0.1, 5.0,  float(P_DEF['sH']), 0.05, key='p_sH')
-            bt_sM = st.slider("매도 MID  ×", 0.1, 3.0,  float(P_DEF['sM']), 0.05, key='p_sM')
-            bt_sL = st.slider("매도 LOW  ×", 0.05, 2.0, float(P_DEF['sL']), 0.05, key='p_sL')
-        with p3:
-            st.markdown("**매수 배율** (하락 시 추가 매수 강도)")
-            bt_bH = st.slider("매수 HIGH ×", 0.1, 3.0,  float(P_DEF['bH']), 0.05, key='p_bH')
-            bt_bM = st.slider("매수 MID  ×", 0.1, 3.0,  float(P_DEF['bM']), 0.05, key='p_bM')
-            bt_bL = st.slider("매수 LOW  ×", 0.5, 10.0, float(P_DEF['bL']), 0.25, key='p_bL')
-        msg_col, btn_col = st.columns([3, 1])
-        with msg_col:
-            if pkey:
-                vals = PRESETS[pkey]
-                st.info(
-                    f"💡 **{pkey} 프리셋** — "
-                    f"hc={vals['hc']:.1%} / lc={vals['lc']:.1%} | "
-                    f"매도 {vals['sH']}/{vals['sM']}/{vals['sL']} | "
-                    f"매수 {vals['bH']}/{vals['bM']}/{vals['bL']}  "
-                    f"→ 슬라이더·실전 탭 모두 자동 반영됩니다."
-                )
-            else:
-                st.info("💡 슬라이더를 조정하면 **실전 트레이딩 탭**에도 즉시 반영됩니다. 저장 후에도 그대로 유지됩니다.")
-        with btn_col:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("💾 파라미터 저장", use_container_width=True):
-                cfg = save_config(st.session_state)
-                ok, err = save_config_to_sheets(cfg)
-                if ok:
-                    st.toast("✅ 저장 + Sheets 동기화 완료! 봇에 자동 반영됩니다.", icon="💾")
-                else:
-                    st.toast("✅ 로컬 저장 완료", icon="💾")
-                    err_text = str(err)
-                    hint = ""
-                    if 'invalid_grant' in err_text.lower() or 'jwt' in err_text.lower():
-                        hint = "\n\n💡 사이드바의 '설정 저장' 버튼을 누르면 더 자세한 진단을 볼 수 있습니다."
-                    st.error(f"⚠️ Sheets 동기화 실패: {err_text}{hint}", icon="🔴")
 
     # ── 거래비용 + 양도세 옵션 ─────────────────────────────────
     with st.expander("💵 거래비용 & 양도세 (현실 시뮬레이션)", expanded=False):
@@ -897,16 +835,16 @@ with tab2:
                                            key='p_tax_rate', disabled=not apply_tax)
             tax_strategy_label = st.selectbox(
                 "양도세 인출 전략",
-                ["D - 1월 일괄 (기본)",
-                 "A - 1월/5월 50/50 분할",
-                 "B - 4월 일괄",
-                 "C - 1월/3월/5월 33/33/34 분할"],
+                ["A - 1월/5월 50/50 분할 (기본)",
+                 "B - 5월 일괄",
+                 "C - 1월 일괄"],
                 key='p_tax_strategy', disabled=not apply_tax,
-                help="A·C 분할 전략은 세금 부담을 후반기로 분산해 그 사이 기간의 운용 자산이 늘어남"
+                help="A 분할 전략은 세금 부담을 후반기로 분산해 그 사이 기간의 운용 자산이 늘어남"
             )
             tax_strategy = tax_strategy_label[0]   # 첫 글자가 코드
-            tax_rebal = st.checkbox("매 납부 직후 현금 비중 리밸런싱", value=True,
-                                    key='p_tax_rebal', disabled=not apply_tax)
+            tax_rebal = st.checkbox("매도-only 리밸런싱 (옵션 B)", value=True,
+                                    key='p_tax_rebal', disabled=not apply_tax,
+                                    help="납부 후 cash 가 부족할 때만 stock 일부 매도. cash 과다 시 강제 매수는 안 함.")
         # 비교 모드
         col_cm1, col_cm2 = st.columns(2)
         compare_costs = col_cm1.checkbox(
@@ -914,9 +852,12 @@ with tab2:
             value=False, key='p_compare_costs',
             help="거래비용·세금 적용/미적용 동시 백테스트")
         compare_strategies = col_cm2.checkbox(
-            "🏛️ 4가지 인출 전략 동시 비교 (A/B/C/D)",
+            "🏛️ 3가지 인출 전략 동시 비교 (A/B/C)",
             value=False, key='p_compare_strategies', disabled=not apply_tax,
-            help="같은 파라미터로 4개 양도세 인출 전략 동시 백테스트 — 어느 전략이 최종 자산 최대인지 확인")
+            help="A=1월/5월 50/50, B=5월 일괄, C=1월 일괄 동시 비교")
+
+    # 검증 종료일까지 데이터 필터링
+    df_bt = df[df['Date'] <= pd.to_datetime(bt_end_date)].reset_index(drop=True)
 
     with st.spinner("🔄 백테스트 계산 중..."):
         cost_kwargs = dict(
@@ -930,18 +871,10 @@ with tab2:
             tax_strategy = tax_strategy,
         )
         bt_cur = run_full_backtest(
-            df, bt_cap, bt_cash_ratio,
+            df_bt, bt_cap, bt_cash_ratio,
             hc=bt_hc, lc=bt_lc,
             sH=bt_sH, sM=bt_sM, sL=bt_sL,
             bH=bt_bH, bM=bt_bM, bL=bt_bL,
-            start_date=bt_start_date,
-            **cost_kwargs,
-        )
-        bt_opt = run_full_backtest(
-            df, bt_cap, bt_cash_ratio,
-            hc=0.06, lc=-0.06,
-            sH=2.0, sM=0.3, sL=0.2,
-            bH=1.0, bM=0.6, bL=2.0,
             start_date=bt_start_date,
             **cost_kwargs,
         )
@@ -949,7 +882,7 @@ with tab2:
         if compare_costs and (apply_comm or apply_tax):
             # 비교용 — 거래비용·세금 모두 끈 baseline
             bt_gross = run_full_backtest(
-                df, bt_cap, bt_cash_ratio,
+                df_bt, bt_cap, bt_cash_ratio,
                 hc=bt_hc, lc=bt_lc,
                 sH=bt_sH, sM=bt_sM, sL=bt_sL,
                 bH=bt_bH, bM=bt_bM, bL=bt_bL,
@@ -957,14 +890,14 @@ with tab2:
                 apply_commission=False, apply_tax=False,
             )
 
-        # 4가지 양도세 인출 전략 비교
+        # 3가지 양도세 인출 전략 비교
         bt_strategies = None
         if compare_strategies and apply_tax:
             bt_strategies = {}
-            for code in ['D', 'A', 'B', 'C']:
+            for code in ['A', 'B', 'C']:
                 kw = dict(cost_kwargs); kw['tax_strategy'] = code
                 bt_strategies[code] = run_full_backtest(
-                    df, bt_cap, bt_cash_ratio,
+                    df_bt, bt_cap, bt_cash_ratio,
                     hc=bt_hc, lc=bt_lc,
                     sH=bt_sH, sM=bt_sM, sL=bt_sL,
                     bH=bt_bH, bM=bt_bM, bL=bt_bL,
@@ -991,14 +924,10 @@ with tab2:
         )
     st.markdown("### 📈 성과 지표")
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("CAGR",         f"{bt_cur['cagr']:.2%}",
-              f"최적화 {bt_opt['cagr']:.2%}")
-    m2.metric("MDD",          f"{bt_cur['mdd']:.2%}",
-              f"최적화 {bt_opt['mdd']:.2%}", delta_color="inverse")
-    m3.metric("Calmar 비율",  f"{bt_cur['cal']:.2f}",
-              f"최적화 {bt_opt['cal']:.2f}")
-    m4.metric("Sortino 비율", f"{bt_cur['sor']:.2f}",
-              f"최적화 {bt_opt['sor']:.2f}")
+    m1.metric("CAGR",         f"{bt_cur['cagr']:.2%}")
+    m2.metric("MDD",          f"{bt_cur['mdd']:.2%}", delta_color="inverse")
+    m3.metric("Calmar 비율",  f"{bt_cur['cal']:.2f}")
+    m4.metric("Sortino 비율", f"{bt_cur['sor']:.2f}")
     m5.metric("최종 자산",    f"${bt_cur['final']:,.0f}",
               f"초기 ${bt_cur['init']:,.0f}")
     st.caption(
@@ -1048,11 +977,11 @@ with tab2:
                 st.warning(f"⚠️ 미납 세액 ${unpaid:,.0f} — 백테스트 종료 시점에 예정 납부일이 도래하지 않음. "
                            f"실제 운용에서는 이후 납부됨.")
 
-        # ── 4가지 인출 전략 비교 표 + 자산 곡선 ──────────
+        # ── 3가지 인출 전략 비교 표 + 자산 곡선 ──────────
         if bt_strategies is not None:
-            st.markdown("### 🏛️ 양도세 인출 전략 4종 비교")
+            st.markdown("### 🏛️ 양도세 인출 전략 3종 비교")
             srows = []
-            for code in ['D', 'A', 'B', 'C']:
+            for code in ['A', 'B', 'C']:
                 r = bt_strategies[code]
                 meta = TAX_SCHEDULES[code]
                 srows.append({
@@ -1084,8 +1013,8 @@ with tab2:
 
             # 자산 곡선 비교
             fig_strat = go.Figure()
-            colors = {'D':'#fbbf24','A':'#60a5fa','B':'#22c55e','C':'#a855f7'}
-            for code in ['D', 'A', 'B', 'C']:
+            colors = {'A':'#60a5fa','B':'#22c55e','C':'#fbbf24'}
+            for code in ['A', 'B', 'C']:
                 r = bt_strategies[code]
                 meta = TAX_SCHEDULES[code]
                 fig_strat.add_trace(go.Scatter(
@@ -1109,25 +1038,20 @@ with tab2:
 
     st.markdown("### 📋 3-way 성과 비교")
     compare = pd.DataFrame({
-        '전략':      ['내 설정', '최적화 파라미터', 'TQQQ B&H'],
-        'CAGR':     [f"{bt_cur['cagr']:.2%}",  f"{bt_opt['cagr']:.2%}",  f"{bt_cur['bh_cagr']:.2%}"],
-        'MDD':      [f"{bt_cur['mdd']:.2%}",   f"{bt_opt['mdd']:.2%}",   f"{bt_cur['bh_mdd']:.2%}"],
-        'Calmar':   [f"{bt_cur['cal']:.2f}",   f"{bt_opt['cal']:.2f}",   "—"],
-        'Sortino':  [f"{bt_cur['sor']:.2f}",   f"{bt_opt['sor']:.2f}",   "—"],
-        '최종 자산': [f"${bt_cur['final']:,.0f}", f"${bt_opt['final']:,.0f}",
-                     f"${bt_cur['bh_eq'][-1]:,.0f}"],
+        '전략':      ['위대리', 'TQQQ B&H'],
+        'CAGR':     [f"{bt_cur['cagr']:.2%}",  f"{bt_cur['bh_cagr']:.2%}"],
+        'MDD':      [f"{bt_cur['mdd']:.2%}",   f"{bt_cur['bh_mdd']:.2%}"],
+        'Calmar':   [f"{bt_cur['cal']:.2f}",   "—"],
+        'Sortino':  [f"{bt_cur['sor']:.2f}",   "—"],
+        '최종 자산': [f"${bt_cur['final']:,.0f}", f"${bt_cur['bh_eq'][-1]:,.0f}"],
     })
     st.dataframe(compare, use_container_width=True, hide_index=True)
     st.divider()
     st.markdown("### 📈 누적 자산 곡선 (로그 스케일)")
     fig_eq = go.Figure()
     fig_eq.add_trace(go.Scatter(
-        x=dates, y=bt_cur['eq'], name='내 설정',
+        x=dates, y=bt_cur['eq'], name='위대리',
         line=dict(color='#60a5fa', width=2.5)
-    ))
-    fig_eq.add_trace(go.Scatter(
-        x=dates, y=bt_opt['eq'], name='최적화 파라미터',
-        line=dict(color='#4ade80', width=2.5)
     ))
     fig_eq.add_trace(go.Scatter(
         x=dates, y=bt_cur['bh_eq'], name='TQQQ B&H',
@@ -1150,81 +1074,9 @@ with tab2:
     )
     apply_grid(fig_eq)
     st.plotly_chart(fig_eq, use_container_width=True)
-    col_dd, col_ev = st.columns(2)
-    with col_dd:
-        fig_dd = go.Figure()
-        fig_dd.add_trace(go.Scatter(
-            x=dates, y=bt_cur['dd'] * 100,
-            fill='tozeroy', name='내 설정',
-            line=dict(color='#f87171', width=1.5),
-            fillcolor='rgba(248,113,113,0.2)'
-        ))
-        fig_dd.add_trace(go.Scatter(
-            x=dates, y=bt_opt['dd'] * 100,
-            name='최적화', line=dict(color='#4ade80', width=1.5)
-        ))
-        fig_dd.add_hline(
-            y=bt_cur['mdd']*100, line_color='#f87171', line_dash='dash',
-            annotation_text=f"MDD {bt_cur['mdd']:.1%}",
-            annotation_font=dict(color='#f87171', size=10)
-        )
-        fig_dd.update_layout(
-            title='낙폭(Drawdown) 비교',
-            yaxis_title='낙폭 (%)', height=300, **CHART_LAYOUT
-        )
-        apply_grid(fig_dd)
-        st.plotly_chart(fig_dd, use_container_width=True)
-    with col_ev:
-        ev_vals = bt_cur['eval']
-        n_high  = int((ev_vals >= bt_hc).sum())
-        n_low   = int((ev_vals <= bt_lc).sum())
-        n_mid   = len(ev_vals) - n_high - n_low
-        fig_ev = go.Figure()
-        fig_ev.add_trace(go.Histogram(
-            x=ev_vals * 100, nbinsx=40,
-            name='Eval', marker_color='#60a5fa', opacity=0.75
-        ))
-        fig_ev.add_vline(x=bt_hc*100, line_color='#fbbf24', line_dash='dash',
-                          annotation_text=f"HIGH ≥{bt_hc:.1%}",
-                          annotation_font=dict(color='#fbbf24', size=10))
-        fig_ev.add_vline(x=bt_lc*100, line_color='#4ade80', line_dash='dash',
-                          annotation_text=f"LOW ≤{bt_lc:.1%}",
-                          annotation_font=dict(color='#4ade80', size=10))
-        fig_ev.update_layout(
-            title=(f"Eval 분포  |  "
-                   f"HIGH {n_high/len(ev_vals):.1%} / "
-                   f"MID {n_mid/len(ev_vals):.1%} / "
-                   f"LOW {n_low/len(ev_vals):.1%}"),
-            xaxis_title='QQQ 시장평가 (%)',
-            height=300, showlegend=False, **CHART_LAYOUT
-        )
-        apply_grid(fig_ev)
-        st.plotly_chart(fig_ev, use_container_width=True)
-    st.markdown("### 📊 주간 수익률 분포")
-    wr = bt_cur['rets'] * 100
-    if len(wr) < 2:
-        st.info("⚠️ 주간 데이터가 부족합니다. 백테스트 시작일을 더 앞으로 설정해 주세요.")
-    else:
-        pos_pct = (wr > 0).mean() * 100
-        fig_ret = go.Figure()
-        fig_ret.add_trace(go.Histogram(
-            x=wr, nbinsx=60,
-            marker_color=['#4ade80' if r >= 0 else '#f87171' for r in wr],
-            name='주간 수익률'
-        ))
-        fig_ret.add_vline(x=0, line_color='white', line_dash='dash', line_width=1)
-        fig_ret.add_vline(x=float(np.mean(wr)), line_color='#fbbf24', line_dash='dot',
-                           annotation_text=f"평균 {np.mean(wr):.2f}%",
-                           annotation_font=dict(color='#fbbf24', size=10))
-        fig_ret.update_layout(
-            title=f'주간 수익률 분포  |  양전 비율 {pos_pct:.1f}%  |  최대 낙주 {float(wr.min()):.1f}%',
-            xaxis_title='주간 수익률 (%)',
-            height=260, showlegend=False, **CHART_LAYOUT
-        )
-        apply_grid(fig_ret)
-        st.plotly_chart(fig_ret, use_container_width=True)
     st.markdown("### 🎯 티어별 성과 분석")
     tiers_arr = np.array(bt_cur['tiers'])
+    wr = bt_cur['rets'] * 100
     wr_full   = np.concatenate([[0], wr]) if len(wr) > 0 else np.array([0.0])
     tier_rows = []
     for name, icon in [('HIGH', '🟡'), ('MID', '🔵'), ('LOW', '🟢')]:
@@ -1250,15 +1102,21 @@ with tab2:
         yr_vals = [float(r['수익률'].replace('%', '').replace('+', '')) for r in bt_cur['yearly']]
         yr_mdds = [float(r['연간 MDD'].replace('%', '')) for r in bt_cur['yearly']]
         yr_labels = [str(r['연도']) for r in bt_cur['yearly']]
+        # 음수 해는 빨강, 양수 해는 청록
+        bar_colors = ['#ef4444' if v < 0 else '#14b8a6' for v in yr_vals]
+        # 차트 상한·하한에 여유를 둬서 텍스트 라벨이 제목·표와 겹치지 않게
+        y_max = max(yr_vals + [0]) * 1.30 + 10
+        y_min = min(yr_mdds + [0]) - 12
         # 연도별 수익률(막대) + MDD(선) 결합 차트
         fig_yr = go.Figure()
         fig_yr.add_trace(go.Bar(
             x=yr_labels, y=yr_vals,
-            marker_color='#14b8a6',     # teal
+            marker_color=bar_colors,
             name='Annual Return',
             text=[f"{v:+.0f}%" for v in yr_vals],
             textposition='outside',
             textfont=dict(size=10, color='#cbd5e1'),
+            cliponaxis=False,
         ))
         fig_yr.add_trace(go.Scatter(
             x=yr_labels, y=yr_mdds,
@@ -1269,12 +1127,18 @@ with tab2:
             text=[f"{v:.0f}%" for v in yr_mdds],
             textposition='bottom center',
             textfont=dict(size=9, color='#fb923c'),
+            cliponaxis=False,
         ))
         fig_yr.add_hline(y=0, line_color='#475569', line_width=1)
         fig_yr.update_layout(
-            title='연도별 수익률 & MDD',
-            yaxis_title='Return / MDD (%)',
-            height=380, **CHART_LAYOUT
+            title=dict(text='연도별 수익률 & MDD', y=0.98),
+            yaxis=dict(title='Return / MDD (%)', range=[y_min, y_max]),
+            height=420,
+            margin=dict(l=10, r=10, t=70, b=20),
+            paper_bgcolor=CHART_LAYOUT['paper_bgcolor'],
+            plot_bgcolor=CHART_LAYOUT['plot_bgcolor'],
+            font=CHART_LAYOUT['font'],
+            legend=dict(orientation='h', y=1.06, font=dict(size=10)),
         )
         apply_grid(fig_yr)
         st.plotly_chart(fig_yr, use_container_width=True)
@@ -1311,8 +1175,8 @@ with tab2:
             })
         log_df = pd.DataFrame(rows_view)
 
-        # 필터 옵션
-        col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
+        # 필터 옵션 (행 수 제한 없음 — 전체 표시)
+        col_f1, col_f2 = st.columns([3, 1])
         with col_f1:
             action_filter = st.multiselect(
                 "Action 필터",
@@ -1322,17 +1186,14 @@ with tab2:
             )
         with col_f2:
             sort_desc = st.checkbox("최신순 정렬", value=True, key='p_log_sort')
-        with col_f3:
-            n_rows = st.number_input("표시 행 수", min_value=10, max_value=10000,
-                                      value=200, step=50, key='p_log_rows')
 
-        # 필터 적용
+        # 필터 적용 — 모든 로그 표시
         action_filter_emoji = [emoji_map[a] for a in action_filter]
         filtered = log_df[log_df['Action'].isin(action_filter_emoji)]
         if sort_desc:
             filtered = filtered.iloc[::-1]
-        st.dataframe(filtered.head(int(n_rows)), use_container_width=True, hide_index=True,
-                     height=500)
+        st.dataframe(filtered, use_container_width=True, hide_index=True, height=600)
+        st.caption(f"표시: {len(filtered):,} 건 (전체 {len(log_df):,} 건 중)")
 
         # CSV 다운로드
         csv = log_df.to_csv(index=False).encode('utf-8-sig')
@@ -1501,44 +1362,86 @@ Eval   = (QQQ / Growth) - 1  ← 추세 대비 괴리율
   초기 현금 비중 45% 유지를 권장합니다.
 """)
     st.divider()
-    st.markdown("### 💡 실전 운용 체크리스트")
+    st.markdown("### 💵 Step 4. 거래비용 & 양도세 모델")
+    st.markdown("""
+백테스트는 *명목 수익률* 외에 **거래 수수료** 와 **한국 거주자 양도세** 를 옵션으로 적용해
+현실적인 net 수익률을 추정할 수 있습니다.
+
+**거래 수수료**
+- 매수: 0.015% (증권사 수수료)
+- 매도: 0.015% + 0.00206% SEC fee = **0.01706%**
+- 위대리는 주 1회 매매라 누적 영향은 작음 (~CAGR -0.05%p 수준)
+
+**양도세 (한국 거주자)**
+- 매년 12/31 기준 실현이익 산정 → 250만원 (약 $1,923) 공제 → 초과분에 22% 부과
+- 가중평균 cost basis 방식 (한국 세법 기본 계산)
+- 현금 부족 시 자동으로 일부 주식 매도해서 충당
+
+**양도세 인출 전략 3종**
+| 코드 | 패턴 | 특징 |
+|---|---|---|
+| **A** | 1월/5월 50/50 분할 (기본) | 후반 50%가 그 사이 운용되어 복리 ↑ |
+| B | 5월 일괄 | 1~4월 동안 자금이 묶이지 않음 |
+| C | 1월 일괄 | 가장 빠른 정리, 깔끔한 회계 |
+
+→ 백테스트에서 3종 동시 비교로 어느 전략이 최종 자산이 더 큰지 확인 가능.
+
+**매도-only 리밸런싱 (옵션 B)**
+- 양도세 차감 후 cash 비중이 *목표보다 낮으면* 일부 stock 매도해서 cash 보충
+- cash 가 *과다해도 강제 매수는 안 함* (시장 타이밍 회피)
+- 강제 매수 버전은 양도세 직후 (보통 1월 강세장 끝) stock 을 비싸게 사서 그 다음 약세장에서 큰 손실로 이어졌음 → 백테스트로 검증된 후 매도-only 가 기본값
+""")
+    st.divider()
+    st.markdown("### 💡 Step 5. 실전 운용 체크리스트")
     tip1, tip2, tip3 = st.columns(3)
     with tip1:
         st.warning("""
-**⏰ 주문 타이밍**
-- 매주 **금요일** 장 마감 10분 전
-- 오후 3:50 기준 LOC 주문 입력
-- 봇은 금요일 ET 04:00–09:30 (pre-market)
-  또는 16:05 이후 (post-close) 실행
-- 시장 휴장 시 전날(목요일) 대체
+**⏰ 주문 타이밍 (오토봇)**
+
+봇 정상 실행 윈도우 (ET 기준):
+- 금요일 04:00–09:30 (pre-market) — 어제 종가 기준
+- 금요일 15:00–16:05 (near-close) — *KST 토 04:00–05:05 ⭐*
+- 금요일 16:05~ / 토 06:00 까지 (post-close)
+
+→ KST 토 04:42 자동매매 패턴은 **near-close 모드** 사용
 """)
     with tip2:
         st.info("""
 **💰 자본 배분 원칙**
-- 초기 현금 비중 **45~50%** 권장
+- 초기 현금 비중 **45%** 권장 (백테스트 검증값)
 - 현금 = LOW 티어 발생 시 매수 탄약
 - LOW 티어 때 현금 소진 → 기회 상실
-- 포지션 비중도 주기적으로 점검
+- 양도세 적용 시 매도-only 리밸런싱 권장
 """)
     with tip3:
         st.success("""
 **🧠 핵심 마인드셋**
 - Eval 낮을수록 = 기회, 두려워하지 않기
 - 하락 시 매수 배율 낮추면 전략 붕괴
-- 파라미터는 월 1회 검토, 잦은 변경 ×
-- B&H 대비 MDD 1/3 = 위대리의 핵심 가치
+- 파라미터는 워크포워드로 검증된 디폴트 유지
+- 양도세 / 수수료 적용 후 net CAGR 로 평가
 """)
     st.divider()
     st.markdown("""
 ### 📊 위대리 vs TQQQ 단순 보유(B&H) 핵심 비교
 | 항목 | 위대리 (최적화 기본값) | TQQQ B&H |
 |------|:---:|:---:|
-| **연평균 수익(CAGR)** | **~43%** | ~40% |
-| **최대 낙폭(MDD)** | **~31%** | ~80% |
-| **Calmar (수익/위험)** | **1.40** | ~0.50 |
+| **연평균 수익 (Gross CAGR)** | **~31%** | ~45% |
+| **평균 OOS MDD** | **~25%** | ~48% |
+| **최악 OOS MDD** | -71% | -80% |
+| **Calmar (수익/위험)** | **1.71** | ~0.93 |
 | **심리적 안정성** | ★★★★★ | ★★☆☆☆ |
 | **주간 주문 횟수** | 1회 | 없음 |
+
 > **TQQQ를 그냥 들고 있으면 -80% 이상의 하락을 버텨야 합니다.**
-> 위대리는 비슷한 수익을 내면서 최대 낙폭을 **1/3 수준**으로 줄여줍니다.
+> 위대리는 약간 적은 수익으로 최대 낙폭을 **절반 수준**으로 줄여줍니다.
 > 낙폭이 작으면 복리 효과도 극대화됩니다. (MDD -80% 회복엔 +400% 상승이 필요!)
+> *위 수치는 walk-forward 15개 OOS 폴드 평균. in-sample 백테스트와 다를 수 있음.*
+
+### 📐 v4.7 변경 사항 요약
+- **양도세 + 수수료 옵션** 추가 — Tab 2 백테스트에서 토글 가능
+- **3가지 양도세 인출 전략** (A=1월/5월, B=5월, C=1월) 동시 비교
+- **매도-only 리밸런싱** 기본 적용 — 강제 매수로 인한 시장 타이밍 손실 방지
+- **봇 near-close 윈도우** 추가 (ET 15:00–16:05 = KST 토 04:00–05:05)
+- **백테스트 UI 단순화** — 초기자본 / 시작일 / 종료일 3개만 설정
 """)
