@@ -66,9 +66,17 @@ def save_config(ss) -> dict:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
     return cfg
 @st.cache_resource(show_spinner=False)
+def _gspread_client_cached(creds_hash: str, creds_json: str):
+    """성공한 gspread 클라이언트만 캐시. creds_json 이 바뀌면 새 클라이언트 생성.
+    실패는 절대 캐시되지 않도록 예외를 그대로 throw 해서 호출 측에서 처리."""
+    import gspread
+    creds = json.loads(creds_json)
+    if 'private_key' in creds:
+        creds['private_key'] = creds['private_key'].replace('\\n', '\n')
+    return gspread.service_account_from_dict(creds)
 def _get_gspread_client():
+    """실패 결과는 캐시되지 않습니다. Secrets 수정 후 재시도 시 즉시 반영됨."""
     try:
-        import gspread
         creds = None
         try:
             sec = st.secrets["gcp_service_account"]
@@ -88,11 +96,14 @@ def _get_gspread_client():
                 creds = json.loads(raw)
         if creds is None:
             return None, "Streamlit Secrets에 gcp_service_account 또는 GCP_CREDENTIALS가 없습니다"
-        if 'private_key' in creds:
-            creds['private_key'] = creds['private_key'].replace('\\n', '\n')
-        gc = gspread.service_account_from_dict(creds)
+        # creds 의 client_email + private_key_id 를 캐시 키로 사용
+        # → 키가 바뀌면 캐시 자동 무효화
+        cache_key = f"{creds.get('client_email','')}:{creds.get('private_key_id','')}"
+        creds_json = json.dumps(creds, sort_keys=True)
+        gc = _gspread_client_cached(cache_key, creds_json)
         return gc, None
     except Exception as e:
+        # 실패는 캐시 안 됨 — 다음 호출 때 처음부터 재시도
         return None, str(e)
 def _sheets_write(ws, rows: list) -> None:
     try:
@@ -206,7 +217,35 @@ with st.sidebar:
                     st.toast("✅ 저장 + Sheets 동기화 완료! 봇에 자동 반영됩니다.", icon="💾")
                 else:
                     st.toast("✅ 로컬 저장 완료", icon="💾")
-                    st.warning(f"⚠️ Sheets 동기화 실패: {err}\n\nStreamlit Secrets에 GCP_CREDENTIALS를 추가해야 봇과 연동됩니다.", icon="🔴")
+                    err_text = str(err)
+                    if 'invalid_grant' in err_text.lower() or 'jwt' in err_text.lower():
+                        st.error(
+                            f"⚠️ Sheets 동기화 실패 — 인증은 됐지만 키가 무효:\n```\n{err_text}\n```\n"
+                            f"**원인 후보**:\n"
+                            f"1. `private_key` 줄바꿈 깨짐 → Streamlit Secrets 에서 `\"\"\"...\"\"\"` 삼중따옴표 + 실제 개행 사용\n"
+                            f"2. GCP 서비스 계정 키가 삭제·회전됨 → 새 키 발급 필요\n"
+                            f"3. 시스템 시계 5분+ 어긋남 → NTP 동기화\n"
+                            f"4. 봇이 동일 키로 정상 동작한다면 → 앱 Secrets 형식만 문제",
+                            icon="🔴"
+                        )
+                    elif 'permission' in err_text.lower() or '403' in err_text:
+                        st.error(
+                            f"⚠️ Sheets 동기화 실패 — 권한 부족:\n```\n{err_text}\n```\n"
+                            f"서비스 계정 이메일을 시트의 공유 대상에 **편집자** 권한으로 추가하세요.",
+                            icon="🔴"
+                        )
+                    elif 'not found' in err_text.lower() or '404' in err_text:
+                        st.error(
+                            f"⚠️ Sheets 동기화 실패 — 시트 키 오류:\n```\n{err_text}\n```\n"
+                            f"`SHEET_KEY` 상수 값을 확인하세요.",
+                            icon="🔴"
+                        )
+                    else:
+                        st.warning(
+                            f"⚠️ Sheets 동기화 실패: {err_text}\n\n"
+                            f"Streamlit Secrets 에 `gcp_service_account` 또는 `GCP_CREDENTIALS` 가 있는지 확인하세요.",
+                            icon="🔴"
+                        )
     st.divider()
     _gc, _gc_err = _get_gspread_client()
     if _gc:
@@ -372,11 +411,38 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
 # ─────────────────────────────────────────────────────────────
 # 5. 전체 기간 백테스트 (Tab 2)
 # ─────────────────────────────────────────────────────────────
+# 양도세 인출 전략 — (월, 비율) 의 리스트
+# 각 entry: 그 해 1월 1일 이후 첫 해당 월의 첫 주간 마감일에 그 비율만큼 납부
+TAX_SCHEDULES = {
+    'D': {'name': '1월 일괄',           'pattern': [(1, 1.00)]},
+    'A': {'name': '1월/5월 50/50',       'pattern': [(1, 0.50), (5, 0.50)]},
+    'B': {'name': '4월 일괄',           'pattern': [(4, 1.00)]},
+    'C': {'name': '1월/3월/5월 33/33/34', 'pattern': [(1, 0.33), (3, 0.33), (5, 0.34)]},
+}
 def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                       hc=0.06, lc=-0.06,
                       sH=2.0,  sM=0.3,  sL=0.2,
                       bH=1.0,  bM=0.6,  bL=2.0,
-                      start_date=None):
+                      start_date=None,
+                      apply_commission=False,
+                      comm_buy=0.00015,            # 0.015% (증권사)
+                      comm_sell=0.00017206,        # 0.015% + SEC 0.00206%
+                      apply_tax=False,
+                      tax_deduction_usd=1923.0,    # ≈ ₩2.5M / 1300
+                      tax_rate=0.22,
+                      tax_rebalance=True,
+                      tax_strategy='D'):
+    """위대리 전략 백테스트 (수수료 + 양도세 옵션 포함).
+
+    apply_commission=True 면 매수/매도마다 수수료 차감.
+    apply_tax=True 면 직전 연도 실현이익에 대한 양도세를
+       tax_strategy 에 따라 분할/일괄 납부:
+         'D' = 1월 일괄
+         'A' = 1월/5월 50/50
+         'B' = 4월 일괄
+         'C' = 1월/3월/5월 33/33/34
+       (tax_rebalance=True 면) 매 납부 직후 cash_ratio 로 리밸런싱.
+    """
     wkly = (data.set_index('Date')[['TQQQ', 'Eval']]
                 .resample('W-FRI').last()
                 .dropna()
@@ -391,26 +457,168 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
     N     = len(wkly)
     span_days = (pd.to_datetime(dates[-1]) - pd.to_datetime(dates[0])).days
     YEARS = max(span_days / 365.25, N / 52)
-    cash   = init_cap * cash_ratio
-    shares = int((init_cap * (1 - cash_ratio)) / P[0])
-    eq     = np.empty(N)
-    tiers  = []
-    eq[0]  = cash + shares * P[0]
+
+    # 초기 포지션 — 첫 매수에도 수수료 적용 (현실 반영)
+    cash   = float(init_cap * cash_ratio)
+    init_stock_value = init_cap * (1 - cash_ratio)
+    shares = int(init_stock_value / P[0])
+    init_buy_cost = shares * P[0] * (1 + comm_buy if apply_commission else 1)
+    cash = init_cap - init_buy_cost
+    # 가중평균 cost basis 추적 (수수료 포함된 누적 매수 금액)
+    total_cost_basis = shares * P[0] * (1 + comm_buy if apply_commission else 1)
+
+    eq        = np.empty(N)
+    tiers     = []
+    eq[0]     = cash + shares * P[0]
+    realized_gain_year = {}     # year -> 실현이익(USD)
+    cum_commission     = 0.0
+    cum_tax            = 0.0
+    tax_events         = []     # 정산 이벤트 로그
+    year_of_last_bar   = pd.Timestamp(dates[0]).year
+    pending_payments   = []     # 대기 중인 분할 납부 큐
+                                # [{'pay_year', 'pay_month', 'amount', 'orig_amount',
+                                #   'prev_year', 'prev_year_gain', 'taxable'}]
+    schedule_pattern   = TAX_SCHEDULES.get(tax_strategy, TAX_SCHEDULES['D'])['pattern']
+
+    def _sell(qty, price, year, mark_realized=True):
+        """공통 매도 로직. cost_basis, shares, cash 갱신 + (옵션) 실현이익 기록."""
+        nonlocal shares, cash, total_cost_basis, cum_commission
+        if qty <= 0 or shares <= 0:
+            return 0.0
+        qty = min(qty, shares)
+        gross   = qty * price
+        fee     = gross * comm_sell if apply_commission else 0.0
+        net_proc = gross - fee
+        # 가중평균 cost basis 비례 차감
+        proportion = qty / shares
+        cost_of_sold = total_cost_basis * proportion
+        gain = net_proc - cost_of_sold
+        total_cost_basis -= cost_of_sold
+        shares -= qty
+        cash   += net_proc
+        cum_commission += fee
+        if mark_realized:
+            realized_gain_year[year] = realized_gain_year.get(year, 0.0) + gain
+        return gain
+
+    def _buy(qty, price):
+        """공통 매수 로직. cost_basis, shares, cash 갱신."""
+        nonlocal shares, cash, total_cost_basis, cum_commission
+        if qty <= 0:
+            return
+        gross = qty * price
+        fee   = gross * comm_buy if apply_commission else 0.0
+        cost  = gross + fee
+        if cost > cash:
+            # 현금 부족 — 살 수 있는 수량으로 클립
+            qty = int(cash / (price * (1 + comm_buy if apply_commission else 1)))
+            if qty <= 0:
+                return
+            gross = qty * price
+            fee   = gross * comm_buy if apply_commission else 0.0
+            cost  = gross + fee
+        total_cost_basis += cost
+        shares += qty
+        cash   -= cost
+        cum_commission += fee
+
     for i in range(N):
         p  = P[i]
         ev = EV[i]
+        date_t = pd.Timestamp(dates[i])
+        cur_year = date_t.year
         tier = 'HIGH' if ev >= hc else ('LOW' if ev <= lc else 'MID')
         tiers.append(tier)
-        if i == 0:
-            continue
-        diff = shares * (p - P[i-1])
-        if diff > 0:
-            qty = int(min(round(diff * {'HIGH': sH, 'MID': sM, 'LOW': sL}[tier] / p), shares))
-            shares -= qty; cash += qty * p
-        elif diff < 0:
-            qty = int(min(cash, abs(diff) * {'HIGH': bH, 'MID': bM, 'LOW': bL}[tier]) / p)
-            shares += qty; cash -= qty * p
+
+        if i > 0:
+            diff = shares * (p - P[i-1])
+            if diff > 0:
+                sr = {'HIGH': sH, 'MID': sM, 'LOW': sL}[tier]
+                qty = int(min(round(diff * sr / p), shares))
+                _sell(qty, p, cur_year, mark_realized=True)
+            elif diff < 0:
+                br = {'HIGH': bH, 'MID': bM, 'LOW': bL}[tier]
+                # 매수 가용 예산 = min(현금, |손실| × 매수배율)
+                budget = min(cash, abs(diff) * br)
+                qty = int(budget / (p * (1 + comm_buy if apply_commission else 1))) \
+                      if apply_commission else int(budget / p)
+                _buy(qty, p)
+
+        # ── 양도세: 새 해 첫 weekly close 시점에 직전 연도 세액 계산 ──
+        if apply_tax and cur_year > year_of_last_bar:
+            prev_year = year_of_last_bar
+            prev_gain = realized_gain_year.get(prev_year, 0.0)
+            taxable   = max(0.0, prev_gain - tax_deduction_usd)
+            total_tax_due = taxable * tax_rate
+            if total_tax_due > 0:
+                for (pm, frac) in schedule_pattern:
+                    pending_payments.append({
+                        'pay_year':    cur_year,
+                        'pay_month':   pm,
+                        'amount':      total_tax_due * frac,
+                        'orig_amount': total_tax_due * frac,
+                        'prev_year':   prev_year,
+                        'prev_year_gain': prev_gain,
+                        'taxable':     taxable,
+                    })
+            year_of_last_bar = cur_year
+
+        # ── 양도세: 대기 중인 분할 납부 처리 ──────────────
+        if apply_tax and pending_payments:
+            cur_month = date_t.month
+            # 현재 시점 이전(또는 같음) 으로 예정된 모든 미납 결제 정산
+            still_pending = []
+            for pay in pending_payments:
+                due = (cur_year > pay['pay_year']) or \
+                      (cur_year == pay['pay_year'] and cur_month >= pay['pay_month'])
+                if not due:
+                    still_pending.append(pay); continue
+                # 결제 실행
+                amount = pay['amount']
+                sold_for_tax = 0
+                if cash < amount:
+                    deficit = amount - cash
+                    eff_p = p * (1 - comm_sell) if apply_commission else p
+                    sell_qty = int(np.ceil(deficit / eff_p)) if eff_p > 0 else 0
+                    sell_qty = min(sell_qty, shares)
+                    sold_for_tax = sell_qty
+                    if sell_qty > 0:
+                        _sell(sell_qty, p, cur_year, mark_realized=True)
+                paid = min(cash, amount)
+                cash = max(0.0, cash - amount)
+                cum_tax += paid
+                tax_events.append({
+                    'date':       date_t.strftime('%Y-%m-%d'),
+                    'prev_year':  pay['prev_year'],
+                    'gain':       pay['prev_year_gain'],
+                    'taxable':    pay['taxable'],
+                    'tax':        paid,
+                    'orig_tax':   pay['orig_amount'],
+                    'sold_for_tax': sold_for_tax,
+                    'split':      f"{int(round(pay['orig_amount']/max(pay['orig_amount'],1)*100))}%"
+                                  if False else
+                                  f"{pay['orig_amount']:.0f} ({tax_strategy})",
+                })
+                # 매 납부 직후 리밸런싱
+                if tax_rebalance:
+                    remaining = cash + shares * p
+                    target_cash = remaining * cash_ratio
+                    if cash > target_cash:
+                        excess = cash - target_cash
+                        qty = int(excess / (p * (1 + comm_buy if apply_commission else 1))) \
+                              if apply_commission else int(excess / p)
+                        _buy(qty, p)
+                    elif cash < target_cash:
+                        d2 = target_cash - cash
+                        eff_p = p * (1 - comm_sell) if apply_commission else p
+                        sq = int(np.ceil(d2 / eff_p)) if eff_p > 0 else 0
+                        sq = min(sq, shares)
+                        if sq > 0:
+                            _sell(sq, p, cur_year, mark_realized=True)
+            pending_payments = still_pending
+
         eq[i] = cash + shares * p
+
     cagr  = (eq[-1] / init_cap) ** (1 / YEARS) - 1
     peak  = np.maximum.accumulate(eq)
     dd    = eq / peak - 1
@@ -434,10 +642,15 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
         ret_pct  = (end_eq / start_eq - 1) * 100 if start_eq > 0 else 0
         yr_peak = np.maximum.accumulate(grp['eq'].values)
         yr_mdd  = float((grp['eq'].values / yr_peak - 1).min()) * 100
+        yr_realized = realized_gain_year.get(int(yr), 0.0)
+        # 해당 연도에 양도세 정산이 있었는지 (다음해 첫 마감에 정산된 직전 연도)
+        yr_tax_paid = sum(t['tax'] for t in tax_events if t['prev_year'] == int(yr))
         yearly_rows.append({
             '연도': int(yr),
             '수익률': f"{ret_pct:+.1f}%",
             '연간 MDD': f"{yr_mdd:.1f}%",
+            '실현이익': f"${yr_realized:,.0f}",
+            '양도세(다음해 정산)': f"${yr_tax_paid:,.0f}",
             '기말 자산': f"${end_eq:,.0f}",
         })
         prev_end = end_eq
@@ -451,6 +664,12 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
         'bh_mdd':  (P / bh_peak - 1).min(),
         'rets': rets,
         'yearly': yearly_rows,
+        'cum_commission': cum_commission,
+        'cum_tax':        cum_tax,
+        'tax_events':     tax_events,
+        'realized_gain_year': realized_gain_year,
+        'tax_strategy':   tax_strategy,
+        'unpaid_tax':     sum(p['amount'] for p in pending_payments),
     }
 # ─────────────────────────────────────────────────────────────
 # 메인 실행
@@ -602,14 +821,74 @@ with tab2:
                     st.toast("✅ 저장 + Sheets 동기화 완료! 봇에 자동 반영됩니다.", icon="💾")
                 else:
                     st.toast("✅ 로컬 저장 완료", icon="💾")
-                    st.error(f"⚠️ Sheets 동기화 실패: {err}", icon="🔴")
+                    err_text = str(err)
+                    hint = ""
+                    if 'invalid_grant' in err_text.lower() or 'jwt' in err_text.lower():
+                        hint = "\n\n💡 사이드바의 '설정 저장' 버튼을 누르면 더 자세한 진단을 볼 수 있습니다."
+                    st.error(f"⚠️ Sheets 동기화 실패: {err_text}{hint}", icon="🔴")
+
+    # ── 거래비용 + 양도세 옵션 ─────────────────────────────────
+    with st.expander("💵 거래비용 & 양도세 (현실 시뮬레이션)", expanded=False):
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            st.markdown("**거래 수수료**")
+            apply_comm = st.checkbox("수수료 적용", value=False, key='p_apply_comm',
+                                     help="매수/매도 시점에 수수료 차감")
+            comm_buy_pct  = st.number_input("매수 수수료 (%)", value=0.015, step=0.001, format="%.3f",
+                                            key='p_comm_buy', disabled=not apply_comm)
+            comm_sell_pct = st.number_input("매도 수수료 + SEC fee (%)", value=0.01706, step=0.001, format="%.5f",
+                                            key='p_comm_sell', disabled=not apply_comm,
+                                            help="기본 0.01706% = 증권사 0.015% + SEC fee 0.00206%")
+        with cc2:
+            st.markdown("**양도세 (한국 거주자)**")
+            apply_tax = st.checkbox("양도세 적용", value=False, key='p_apply_tax',
+                                    help="직전 연도 실현이익에 대해 인출 전략에 따라 정산")
+            tax_dedu  = st.number_input("연간 공제 (USD)", value=1923.0, step=100.0,
+                                        key='p_tax_dedu', disabled=not apply_tax,
+                                        help="기본 $1923 ≈ ₩2.5M / FX 1300 — FX 변동 시 조정")
+            tax_rate_pct = st.number_input("세율 (%)", value=22.0, step=0.5,
+                                           key='p_tax_rate', disabled=not apply_tax)
+            tax_strategy_label = st.selectbox(
+                "양도세 인출 전략",
+                ["D - 1월 일괄 (기본)",
+                 "A - 1월/5월 50/50 분할",
+                 "B - 4월 일괄",
+                 "C - 1월/3월/5월 33/33/34 분할"],
+                key='p_tax_strategy', disabled=not apply_tax,
+                help="A·C 분할 전략은 세금 부담을 후반기로 분산해 그 사이 기간의 운용 자산이 늘어남"
+            )
+            tax_strategy = tax_strategy_label[0]   # 첫 글자가 코드
+            tax_rebal = st.checkbox("매 납부 직후 현금 비중 리밸런싱", value=True,
+                                    key='p_tax_rebal', disabled=not apply_tax)
+        # 비교 모드
+        col_cm1, col_cm2 = st.columns(2)
+        compare_costs = col_cm1.checkbox(
+            "⚖️ Gross vs Net 비교 (적용 ON vs OFF)",
+            value=False, key='p_compare_costs',
+            help="거래비용·세금 적용/미적용 동시 백테스트")
+        compare_strategies = col_cm2.checkbox(
+            "🏛️ 4가지 인출 전략 동시 비교 (A/B/C/D)",
+            value=False, key='p_compare_strategies', disabled=not apply_tax,
+            help="같은 파라미터로 4개 양도세 인출 전략 동시 백테스트 — 어느 전략이 최종 자산 최대인지 확인")
+
     with st.spinner("🔄 백테스트 계산 중..."):
+        cost_kwargs = dict(
+            apply_commission = apply_comm,
+            comm_buy   = comm_buy_pct  / 100,
+            comm_sell  = comm_sell_pct / 100,
+            apply_tax  = apply_tax,
+            tax_deduction_usd = tax_dedu,
+            tax_rate   = tax_rate_pct / 100,
+            tax_rebalance = tax_rebal,
+            tax_strategy = tax_strategy,
+        )
         bt_cur = run_full_backtest(
             df, bt_cap, bt_cash_ratio,
             hc=bt_hc, lc=bt_lc,
             sH=bt_sH, sM=bt_sM, sL=bt_sL,
             bH=bt_bH, bM=bt_bM, bL=bt_bL,
             start_date=bt_start_date,
+            **cost_kwargs,
         )
         bt_opt = run_full_backtest(
             df, bt_cap, bt_cash_ratio,
@@ -617,7 +896,34 @@ with tab2:
             sH=2.0, sM=0.3, sL=0.2,
             bH=1.0, bM=0.6, bL=2.0,
             start_date=bt_start_date,
+            **cost_kwargs,
         )
+        bt_gross = None
+        if compare_costs and (apply_comm or apply_tax):
+            # 비교용 — 거래비용·세금 모두 끈 baseline
+            bt_gross = run_full_backtest(
+                df, bt_cap, bt_cash_ratio,
+                hc=bt_hc, lc=bt_lc,
+                sH=bt_sH, sM=bt_sM, sL=bt_sL,
+                bH=bt_bH, bM=bt_bM, bL=bt_bL,
+                start_date=bt_start_date,
+                apply_commission=False, apply_tax=False,
+            )
+
+        # 4가지 양도세 인출 전략 비교
+        bt_strategies = None
+        if compare_strategies and apply_tax:
+            bt_strategies = {}
+            for code in ['D', 'A', 'B', 'C']:
+                kw = dict(cost_kwargs); kw['tax_strategy'] = code
+                bt_strategies[code] = run_full_backtest(
+                    df, bt_cap, bt_cash_ratio,
+                    hc=bt_hc, lc=bt_lc,
+                    sH=bt_sH, sM=bt_sM, sL=bt_sL,
+                    bH=bt_bH, bM=bt_bM, bL=bt_bL,
+                    start_date=bt_start_date,
+                    **kw,
+                )
     if bt_cur is None:
         st.warning("백테스트 데이터가 부족합니다.")
         st.stop()
@@ -650,8 +956,110 @@ with tab2:
               f"초기 ${bt_cur['init']:,.0f}")
     st.caption(
         f"백테스트 기간: {dates[0].strftime('%Y.%m.%d')} ~ {dates[-1].strftime('%Y.%m.%d')}"
-        f"  ({bt_cur['years']:.1f}년) | 초기 자본 ${bt_cap:,} | 초기 현금 {bt_cash_ratio:.0%}"
+        f"  ({bt_cur['years']:.1f}년) | 초기 자본 ${bt_cap:,} | 초기 현금 {bt_cash_ratio:.0%} | "
+        f"수수료 {'ON' if apply_comm else 'OFF'} / 양도세 {'ON' if apply_tax else 'OFF'}"
     )
+    # ── 거래비용/세금 요약 + Gross vs Net 비교 ─────────────────
+    if apply_comm or apply_tax:
+        st.markdown("### 💵 거래비용 & 양도세 요약")
+        cs1, cs2, cs3, cs4 = st.columns(4)
+        cs1.metric("누적 수수료",    f"${bt_cur['cum_commission']:,.0f}")
+        cs2.metric("누적 양도세",    f"${bt_cur['cum_tax']:,.0f}")
+        total_cost = bt_cur['cum_commission'] + bt_cur['cum_tax']
+        cs3.metric("총 비용 합계",   f"${total_cost:,.0f}")
+        cs4.metric("최종 자산 대비", f"{total_cost / max(bt_cur['final'], 1) * 100:.2f}%")
+
+        if bt_gross is not None:
+            st.markdown("**Gross (비용·세금 0) vs Net (현재 설정)**")
+            gn = pd.DataFrame({
+                '구분': ['Gross', 'Net (현재)', '차이'],
+                'CAGR': [f"{bt_gross['cagr']:.2%}", f"{bt_cur['cagr']:.2%}",
+                         f"{(bt_cur['cagr']-bt_gross['cagr'])*100:+.2f}%p"],
+                'MDD':  [f"{bt_gross['mdd']:.2%}",  f"{bt_cur['mdd']:.2%}",
+                         f"{(bt_cur['mdd']-bt_gross['mdd'])*100:+.2f}%p"],
+                'Calmar': [f"{bt_gross['cal']:.2f}", f"{bt_cur['cal']:.2f}",
+                           f"{bt_cur['cal']-bt_gross['cal']:+.2f}"],
+                '최종 자산': [f"${bt_gross['final']:,.0f}", f"${bt_cur['final']:,.0f}",
+                              f"${bt_cur['final']-bt_gross['final']:+,.0f}"],
+            })
+            st.dataframe(gn, use_container_width=True, hide_index=True)
+
+        if apply_tax and bt_cur.get('tax_events'):
+            st.markdown("**개별 납부 이벤트 내역**")
+            tax_df = pd.DataFrame([{
+                '납부일':       e['date'],
+                '대상 연도':    e['prev_year'],
+                '연 실현이익':  f"${e['gain']:,.0f}",
+                '연 과세표준':  f"${e['taxable']:,.0f}",
+                '이번 납부액':  f"${e['tax']:,.0f}",
+                '예정 금액':    f"${e.get('orig_tax', e['tax']):,.0f}",
+                '세금 충당 매도': f"{e['sold_for_tax']}주",
+            } for e in bt_cur['tax_events']])
+            st.dataframe(tax_df, use_container_width=True, hide_index=True)
+            unpaid = bt_cur.get('unpaid_tax', 0.0)
+            if unpaid > 0:
+                st.warning(f"⚠️ 미납 세액 ${unpaid:,.0f} — 백테스트 종료 시점에 예정 납부일이 도래하지 않음. "
+                           f"실제 운용에서는 이후 납부됨.")
+
+        # ── 4가지 인출 전략 비교 표 + 자산 곡선 ──────────
+        if bt_strategies is not None:
+            st.markdown("### 🏛️ 양도세 인출 전략 4종 비교")
+            srows = []
+            for code in ['D', 'A', 'B', 'C']:
+                r = bt_strategies[code]
+                meta = TAX_SCHEDULES[code]
+                srows.append({
+                    '전략':    f"{code}. {meta['name']}",
+                    'CAGR':   f"{r['cagr']:.2%}",
+                    'MDD':    f"{r['mdd']:.2%}",
+                    'Calmar': f"{r['cal']:.2f}",
+                    'Sortino':f"{r['sor']:.2f}",
+                    '최종 자산': f"${r['final']:,.0f}",
+                    '누적 세금': f"${r['cum_tax']:,.0f}",
+                    '미납': f"${r.get('unpaid_tax', 0):,.0f}",
+                })
+            st.dataframe(pd.DataFrame(srows), use_container_width=True, hide_index=True)
+
+            # 베스트 전략 표시
+            best_code = max(bt_strategies.keys(),
+                            key=lambda c: bt_strategies[c]['final'])
+            best_r = bt_strategies[best_code]
+            worst_code = min(bt_strategies.keys(),
+                             key=lambda c: bt_strategies[c]['final'])
+            worst_r = bt_strategies[worst_code]
+            diff_pct = (best_r['final'] / worst_r['final'] - 1) * 100
+            st.success(
+                f"🏆 **최종 자산 1위: 전략 {best_code} ({TAX_SCHEDULES[best_code]['name']})** "
+                f"— ${best_r['final']:,.0f}\n\n"
+                f"📉 최하: 전략 {worst_code} ({TAX_SCHEDULES[worst_code]['name']}) "
+                f"— ${worst_r['final']:,.0f} (1위 대비 {-diff_pct:.2f}% 적음)"
+            )
+
+            # 자산 곡선 비교
+            fig_strat = go.Figure()
+            colors = {'D':'#fbbf24','A':'#60a5fa','B':'#22c55e','C':'#a855f7'}
+            for code in ['D', 'A', 'B', 'C']:
+                r = bt_strategies[code]
+                meta = TAX_SCHEDULES[code]
+                fig_strat.add_trace(go.Scatter(
+                    x=pd.to_datetime(r['dates']), y=r['eq'],
+                    name=f"{code}. {meta['name']}",
+                    line=dict(color=colors[code], width=2),
+                ))
+            fig_strat.update_layout(
+                title='4가지 인출 전략 — OOS 누적 자산 곡선 (log)',
+                yaxis=dict(title='자산 ($)', type='log'),
+                height=380, **CHART_LAYOUT
+            )
+            apply_grid(fig_strat)
+            st.plotly_chart(fig_strat, use_container_width=True)
+
+            st.caption(
+                "💡 분할 납부 (A·C) 는 후반 납부분이 *그 사이 기간 동안 운용 중* 이라 복리 효과로 "
+                "최종 자산이 일괄(D·B) 보다 약간 높을 수 있어요. 다만 2~5월 시장 변동성에 노출되니 "
+                "단기 MDD 도 함께 비교하세요."
+            )
+
     st.markdown("### 📋 3-way 성과 비교")
     compare = pd.DataFrame({
         '전략':      ['내 설정', '최적화 파라미터', 'TQQQ B&H'],
@@ -678,6 +1086,11 @@ with tab2:
         x=dates, y=bt_cur['bh_eq'], name='TQQQ B&H',
         line=dict(color='#fb923c', width=1.5, dash='dash'), opacity=0.7
     ))
+    if bt_gross is not None:
+        fig_eq.add_trace(go.Scatter(
+            x=dates, y=bt_gross['eq'], name='Gross (비용·세금 0)',
+            line=dict(color='#a855f7', width=1.5, dash='dot'), opacity=0.6
+        ))
     fig_eq.add_hline(
         y=bt_cap, line_color='#475569', line_dash='dot', line_width=1,
         annotation_text=f"초기자본 ${bt_cap:,}",
