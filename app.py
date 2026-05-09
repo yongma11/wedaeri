@@ -476,9 +476,8 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
     tax_events         = []     # 정산 이벤트 로그
     year_of_last_bar   = pd.Timestamp(dates[0]).year
     pending_payments   = []     # 대기 중인 분할 납부 큐
-                                # [{'pay_year', 'pay_month', 'amount', 'orig_amount',
-                                #   'prev_year', 'prev_year_gain', 'taxable'}]
     schedule_pattern   = TAX_SCHEDULES.get(tax_strategy, TAX_SCHEDULES['D'])['pattern']
+    trade_log          = []     # 매주 매매 이벤트 로그
 
     def _sell(qty, price, year, mark_realized=True):
         """공통 매도 로직. cost_basis, shares, cash 갱신 + (옵션) 실현이익 기록."""
@@ -530,19 +529,50 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
         tier = 'HIGH' if ev >= hc else ('LOW' if ev <= lc else 'MID')
         tiers.append(tier)
 
+        action_label = "관망"
+        qty_signed   = 0
+        realized_pnl_this = 0.0
         if i > 0:
             diff = shares * (p - P[i-1])
             if diff > 0:
                 sr = {'HIGH': sH, 'MID': sM, 'LOW': sL}[tier]
                 qty = int(min(round(diff * sr / p), shares))
-                _sell(qty, p, cur_year, mark_realized=True)
+                if qty > 0:
+                    realized_pnl_this = _sell(qty, p, cur_year, mark_realized=True)
+                    action_label = "매도"
+                    qty_signed = -qty
             elif diff < 0:
                 br = {'HIGH': bH, 'MID': bM, 'LOW': bL}[tier]
-                # 매수 가용 예산 = min(현금, |손실| × 매수배율)
                 budget = min(cash, abs(diff) * br)
                 qty = int(budget / (p * (1 + comm_buy if apply_commission else 1))) \
                       if apply_commission else int(budget / p)
-                _buy(qty, p)
+                if qty > 0:
+                    shares_before = shares
+                    _buy(qty, p)
+                    qty_actual = shares - shares_before
+                    if qty_actual > 0:
+                        action_label = "매수"
+                        qty_signed = qty_actual
+
+        # 매매 로그 기록 (관망은 제외, 거래된 주만)
+        if action_label != "관망":
+            avg_cost = (total_cost_basis / shares) if shares > 0 else 0.0
+            total_asset = cash + shares * p
+            trade_log.append({
+                'date':         date_t.strftime('%Y-%m-%d'),
+                'action':       action_label,
+                'tier':         tier,
+                'eval':         ev,
+                'close':        p,
+                'qty':          qty_signed,
+                'avg_price':    avg_cost,
+                'realized_pnl': realized_pnl_this,
+                'balance_qty':  shares,
+                'cash':         cash,
+                'total_asset':  total_asset,
+                'return_pct':   (total_asset / init_cap - 1) * 100,
+                'note':         '',
+            })
 
         # ── 양도세: 새 해 첫 weekly close 시점에 직전 연도 세액 계산 ──
         if apply_tax and cur_year > year_of_last_bar:
@@ -587,6 +617,22 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                 paid = min(cash, amount)
                 cash = max(0.0, cash - amount)
                 cum_tax += paid
+                # trade_log 에도 양도세 이벤트 추가
+                trade_log.append({
+                    'date':         date_t.strftime('%Y-%m-%d'),
+                    'action':       "양도세",
+                    'tier':         tier,
+                    'eval':         ev,
+                    'close':        p,
+                    'qty':          -sold_for_tax if sold_for_tax > 0 else 0,
+                    'avg_price':    (total_cost_basis / shares) if shares > 0 else 0.0,
+                    'realized_pnl': -paid,
+                    'balance_qty':  shares,
+                    'cash':         cash,
+                    'total_asset':  cash + shares * p,
+                    'return_pct':   ((cash + shares * p) / init_cap - 1) * 100,
+                    'note':         f"{pay['prev_year']}년 분 ({tax_strategy})",
+                })
                 tax_events.append({
                     'date':       date_t.strftime('%Y-%m-%d'),
                     'prev_year':  pay['prev_year'],
@@ -670,6 +716,7 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
         'realized_gain_year': realized_gain_year,
         'tax_strategy':   tax_strategy,
         'unpaid_tax':     sum(p['amount'] for p in pending_payments),
+        'trade_log':      trade_log,
     }
 # ─────────────────────────────────────────────────────────────
 # 메인 실행
@@ -1201,25 +1248,100 @@ with tab2:
         yr_df = pd.DataFrame(bt_cur['yearly'])
         st.dataframe(yr_df, use_container_width=True, hide_index=True)
         yr_vals = [float(r['수익률'].replace('%', '').replace('+', '')) for r in bt_cur['yearly']]
+        yr_mdds = [float(r['연간 MDD'].replace('%', '')) for r in bt_cur['yearly']]
         yr_labels = [str(r['연도']) for r in bt_cur['yearly']]
-        colors = ['#4ade80' if v >= 0 else '#f87171' for v in yr_vals]
+        # 연도별 수익률(막대) + MDD(선) 결합 차트
         fig_yr = go.Figure()
         fig_yr.add_trace(go.Bar(
             x=yr_labels, y=yr_vals,
-            marker_color=colors,
-            name='연간 수익률',
-            text=[f"{v:+.1f}%" for v in yr_vals],
+            marker_color='#14b8a6',     # teal
+            name='Annual Return',
+            text=[f"{v:+.0f}%" for v in yr_vals],
             textposition='outside',
             textfont=dict(size=10, color='#cbd5e1'),
         ))
+        fig_yr.add_trace(go.Scatter(
+            x=yr_labels, y=yr_mdds,
+            mode='lines+markers+text',
+            line=dict(color='#fb923c', width=2),
+            marker=dict(size=8, color='#fb923c'),
+            name='MDD',
+            text=[f"{v:.0f}%" for v in yr_mdds],
+            textposition='bottom center',
+            textfont=dict(size=9, color='#fb923c'),
+        ))
         fig_yr.add_hline(y=0, line_color='#475569', line_width=1)
         fig_yr.update_layout(
-            title='연도별 수익률 (%)',
-            yaxis_title='수익률 (%)',
-            height=280, showlegend=False, **CHART_LAYOUT
+            title='연도별 수익률 & MDD',
+            yaxis_title='Return / MDD (%)',
+            height=380, **CHART_LAYOUT
         )
         apply_grid(fig_yr)
         st.plotly_chart(fig_yr, use_container_width=True)
+
+    # ── 4. 전체 매매 로그 ───────────────────────────────────
+    st.markdown("### 📋 전체 매매 로그")
+    if bt_cur.get('trade_log'):
+        log = bt_cur['trade_log']
+        n_buy  = sum(1 for r in log if r['action'] == '매수')
+        n_sell = sum(1 for r in log if r['action'] == '매도')
+        n_tax  = sum(1 for r in log if r['action'] == '양도세')
+        st.caption(
+            f"총 매매 건수: **{len(log)}건** "
+            f"(매수 {n_buy:,} / 매도 {n_sell:,}"
+            f"{' / 양도세 ' + str(n_tax) if n_tax else ''})"
+        )
+        # 표시용 dataframe — 가독성 좋은 포맷
+        emoji_map = {'매수': '🟢 매수', '매도': '🔴 매도', '양도세': '🟡 양도세'}
+        rows_view = []
+        for r in log:
+            rows_view.append({
+                'Date':         r['date'],
+                'Action':       emoji_map.get(r['action'], r['action']),
+                'Eval_Tier':    f"{r['eval']*100:.2f}% ({r['tier']})",
+                'Close':        f"${r['close']:.2f}",
+                'Qty':          f"{r['qty']:+,d}" if r['qty'] != 0 else "0",
+                'Avg_Price':    f"${r['avg_price']:.2f}",
+                'Realized_PnL': f"${r['realized_pnl']:,.2f}",
+                'Balance_Qty':  f"{r['balance_qty']:,}",
+                'Total_Cash':   f"${r['cash']:,.2f}",
+                'Total_Asset':  f"${r['total_asset']:,.2f}",
+                'Return':       f"{r['return_pct']:+,.2f}%",
+                'Note':         r.get('note', ''),
+            })
+        log_df = pd.DataFrame(rows_view)
+
+        # 필터 옵션
+        col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
+        with col_f1:
+            action_filter = st.multiselect(
+                "Action 필터",
+                options=['매수', '매도', '양도세'],
+                default=['매수', '매도', '양도세'],
+                key='p_log_filter',
+            )
+        with col_f2:
+            sort_desc = st.checkbox("최신순 정렬", value=True, key='p_log_sort')
+        with col_f3:
+            n_rows = st.number_input("표시 행 수", min_value=10, max_value=10000,
+                                      value=200, step=50, key='p_log_rows')
+
+        # 필터 적용
+        action_filter_emoji = [emoji_map[a] for a in action_filter]
+        filtered = log_df[log_df['Action'].isin(action_filter_emoji)]
+        if sort_desc:
+            filtered = filtered.iloc[::-1]
+        st.dataframe(filtered.head(int(n_rows)), use_container_width=True, hide_index=True,
+                     height=500)
+
+        # CSV 다운로드
+        csv = log_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 매매 로그 CSV 다운로드",
+            data=csv,
+            file_name=f"wedaeri_trade_log_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime='text/csv',
+        )
 # ═══════════════════════════════════════════════════════════════
 # TAB 3 — 전략 로직
 # ═══════════════════════════════════════════════════════════════
