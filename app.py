@@ -144,6 +144,77 @@ def save_config_to_sheets(cfg: dict) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 # ─────────────────────────────────────────────────────────────
+# 양도세 납부 기록 (Sheets '양도세납부' 시트)
+# 컬럼: date | for_year | amount_usd | amount_krw | fx_rate | note
+# ─────────────────────────────────────────────────────────────
+TAX_SHEET_NAME = "양도세납부"
+TAX_SHEET_HEADER = ['date', 'for_year', 'amount_usd', 'amount_krw', 'fx_rate', 'note']
+def load_tax_payments() -> tuple[list, str]:
+    """납부 기록 리스트 반환. 시트 없으면 빈 리스트."""
+    try:
+        gc, err = _get_gspread_client()
+        if gc is None:
+            return [], err or "인증 실패"
+        sh = gc.open_by_key(SHEET_KEY)
+        try:
+            ws = sh.worksheet(TAX_SHEET_NAME)
+        except Exception:
+            return [], ""   # 시트 없음 — 정상 (아직 기록 없음)
+        records = ws.get_all_records()
+        # 숫자 필드 변환
+        out = []
+        for r in records:
+            try:
+                out.append({
+                    'date':       str(r.get('date', '')),
+                    'for_year':   int(float(r.get('for_year', 0))),
+                    'amount_usd': float(r.get('amount_usd', 0)),
+                    'amount_krw': float(r.get('amount_krw', 0)),
+                    'fx_rate':    float(r.get('fx_rate', 1300)),
+                    'note':       str(r.get('note', '')),
+                })
+            except Exception:
+                continue
+        return out, ""
+    except Exception as e:
+        return [], str(e)
+def save_tax_payment(payment: dict) -> tuple[bool, str]:
+    """납부 1건을 시트에 *추가* (기존 기록 보존)."""
+    try:
+        gc, err = _get_gspread_client()
+        if gc is None:
+            return False, err or "인증 실패"
+        sh = gc.open_by_key(SHEET_KEY)
+        try:
+            ws = sh.worksheet(TAX_SHEET_NAME)
+        except Exception:
+            ws = sh.add_worksheet(title=TAX_SHEET_NAME, rows=200, cols=6)
+            _sheets_write(ws, [TAX_SHEET_HEADER])
+        new_row = [str(payment.get(k, '')) for k in TAX_SHEET_HEADER]
+        ws.append_row(new_row, value_input_option='USER_ENTERED')
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+def delete_tax_payment(date_str: str) -> tuple[bool, str]:
+    """date 가 일치하는 첫 번째 행을 삭제."""
+    try:
+        gc, err = _get_gspread_client()
+        if gc is None:
+            return False, err or "인증 실패"
+        sh = gc.open_by_key(SHEET_KEY)
+        try:
+            ws = sh.worksheet(TAX_SHEET_NAME)
+        except Exception:
+            return False, "시트 없음"
+        records = ws.get_all_records()
+        for i, r in enumerate(records):
+            if str(r.get('date', '')) == date_str:
+                ws.delete_rows(i + 2)   # +1 for header, +1 for 1-indexing
+                return True, ""
+        return False, f"date={date_str} 기록을 찾을 수 없음"
+    except Exception as e:
+        return False, str(e)
+# ─────────────────────────────────────────────────────────────
 # 1. 페이지 설정 & 스타일
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="위대리 Quantum T-Flow v4.8", layout="wide")
@@ -850,13 +921,152 @@ with tab1:
             f'<h1>{val}</h1></div>',
             unsafe_allow_html=True)
     st.divider()
+    # ── 양도세 납부 관리 (v4.8 신규) ─────────────────────────
+    _now = datetime.now()
+    _cur_year = _now.year
+    _cur_month = _now.month
+    # 전략 A 기본: 1월/5월 첫주 알림 (매월 1~14일 알림)
+    _is_tax_window = (_cur_month in [1, 5]) and (_now.day <= 14)
+    _tax_strategy_label = "1월/5월 50/50 분할 (전략 A)"
+
+    # 기존 납부 기록 로드
+    _tax_payments, _tax_load_err = load_tax_payments()
+    _total_paid_usd = sum(p['amount_usd'] for p in _tax_payments)
+    _paid_for_year_curr = sum(p['amount_usd'] for p in _tax_payments
+                               if p['for_year'] == _cur_year - 1)
+
+    if _is_tax_window:
+        st.warning(
+            f"🧾 **양도세 납부 시기 알림** — {_now.strftime('%Y년 %m월')}\n\n"
+            f"전략 **{_tax_strategy_label}** 기준, {_cur_year - 1}년 분 양도세 납부 권장 시기입니다. "
+            f"현재까지 {_cur_year - 1}년 분으로 기록된 납부액: **${_paid_for_year_curr:,.2f}**\n\n"
+            f"실제 납부 후 아래 폼에 기록하면 봇이 자동으로 가상 잔고에서 차감합니다.",
+            icon="🧾",
+        )
+
+    with st.expander("🧾 양도세 납부 관리", expanded=_is_tax_window):
+        col_p1, col_p2 = st.columns([1, 1])
+
+        # 좌측: 새 납부 기록 입력 폼
+        with col_p1:
+            st.markdown("**📝 새 납부 기록 추가**")
+            with st.form("tax_payment_form", clear_on_submit=True):
+                p_date = st.date_input("납부일", value=_now.date(),
+                                       key='p_tax_pay_date')
+                p_year = st.number_input("대상 연도",
+                                         value=_cur_year - 1,
+                                         min_value=2010, max_value=_cur_year,
+                                         step=1, key='p_tax_for_year',
+                                         help="어느 연도의 양도세인지")
+                p_input_mode = st.radio("입력 방식", ["KRW", "USD"],
+                                         horizontal=True, key='p_tax_input_mode')
+                col_amt, col_fx = st.columns(2)
+                with col_amt:
+                    if p_input_mode == "KRW":
+                        p_amount_krw = st.number_input(
+                            "납부액 (₩)", value=0, min_value=0, step=10000,
+                            key='p_tax_krw',
+                        )
+                    else:
+                        p_amount_usd_in = st.number_input(
+                            "납부액 ($)", value=0.0, min_value=0.0, step=10.0,
+                            key='p_tax_usd',
+                        )
+                with col_fx:
+                    p_fx = st.number_input(
+                        "환율 (KRW/USD)", value=1300.0, min_value=500.0,
+                        step=10.0, key='p_tax_fx',
+                        help="USD ↔ KRW 변환에 사용",
+                    )
+                p_note = st.text_input("메모 (선택)", value="",
+                                        placeholder="예: 1차 납부 (50%)",
+                                        key='p_tax_note')
+                submitted = st.form_submit_button("💾 납부 기록 저장",
+                                                  use_container_width=True)
+                if submitted:
+                    if p_input_mode == "KRW":
+                        p_amount_krw_val = float(p_amount_krw)
+                        p_amount_usd_val = p_amount_krw_val / p_fx if p_fx > 0 else 0
+                    else:
+                        p_amount_usd_val = float(p_amount_usd_in)
+                        p_amount_krw_val = p_amount_usd_val * p_fx
+                    if p_amount_usd_val <= 0:
+                        st.error("납부액이 0 입니다. 다시 확인하세요.")
+                    else:
+                        ok, err = save_tax_payment({
+                            'date':       p_date.strftime("%Y-%m-%d"),
+                            'for_year':   int(p_year),
+                            'amount_usd': round(p_amount_usd_val, 2),
+                            'amount_krw': round(p_amount_krw_val, 0),
+                            'fx_rate':    p_fx,
+                            'note':       p_note,
+                        })
+                        if ok:
+                            st.success(
+                                f"✅ 저장 완료: {p_date} | {p_year}년 분 | "
+                                f"₩{p_amount_krw_val:,.0f} (≈${p_amount_usd_val:,.2f}) "
+                                f"| 봇이 다음 실행 시 자동 반영"
+                            )
+                            st.rerun()
+                        else:
+                            st.error(f"⚠️ 저장 실패: {err}")
+
+        # 우측: 기록된 납부 내역
+        with col_p2:
+            st.markdown("**📊 납부 기록**")
+            if _tax_load_err:
+                st.error(f"시트 로드 실패: {_tax_load_err}")
+            elif not _tax_payments:
+                st.info("아직 기록된 납부가 없습니다.")
+            else:
+                _df_pay = pd.DataFrame([{
+                    '납부일':      p['date'],
+                    '대상 연도':   p['for_year'],
+                    '금액 ($)':    f"${p['amount_usd']:,.2f}",
+                    '금액 (₩)':    f"₩{p['amount_krw']:,.0f}",
+                    '환율':        f"{p['fx_rate']:.0f}",
+                    '메모':        p['note'],
+                } for p in _tax_payments])
+                st.dataframe(_df_pay, use_container_width=True, hide_index=True)
+                st.caption(
+                    f"누적 납부: **${_total_paid_usd:,.2f}** "
+                    f"({len(_tax_payments)}건) — 봇이 가상 잔고에서 차감"
+                )
+
+                # 삭제 옵션
+                _del_dates = ['(선택 안 함)'] + [p['date'] for p in _tax_payments]
+                _del_target = st.selectbox("삭제할 기록 (납부일 기준)", _del_dates,
+                                            key='p_tax_delete_target')
+                if _del_target != '(선택 안 함)':
+                    if st.button(f"🗑️ {_del_target} 기록 삭제",
+                                  use_container_width=True):
+                        ok, err = delete_tax_payment(_del_target)
+                        if ok:
+                            st.success("삭제 완료")
+                            st.rerun()
+                        else:
+                            st.error(f"삭제 실패: {err}")
+
+    # ── 계좌 현황 (양도세 차감 반영) ─────────────────────────
     st.subheader("💰 내 계좌 현황")
+    _adjusted_total = float(last['총자산']) - _total_paid_usd
+    _adjusted_cash  = float(last['현금'])    - _total_paid_usd
+    _adjusted_cash_pct = (_adjusted_cash / _adjusted_total * 100
+                          if _adjusted_total > 0 else 0)
+    _adjusted_pnl_pct = (_adjusted_total / st_cap - 1) * 100 if st_cap > 0 else 0
     a1, a2, a3, a4, a5 = st.columns(5)
     a1.metric("보유 수량",  f"{last['보유수량']:,} 주")
-    a2.metric("보유 현금",  f"${last['현금']:,.2f}")
-    a3.metric("수익률",     last['수익률'])
+    a2.metric("보유 현금",  f"${_adjusted_cash:,.2f}",
+              f"−양도세 ${_total_paid_usd:,.0f}" if _total_paid_usd > 0 else None)
+    a3.metric("수익률 (세후)", f"{_adjusted_pnl_pct:+.2f}%",
+              f"세전 {last['수익률']}" if _total_paid_usd > 0 else None)
     a4.metric("평가 금액",  f"${last['보유수량'] * latest_tqqq:,.2f}")
-    a5.metric("현금 비중",  f"{last['현금'] / last['총자산'] * 100:.2f}%")
+    a5.metric("현금 비중",  f"{_adjusted_cash_pct:.2f}%")
+    if _total_paid_usd > 0:
+        st.caption(
+            f"💡 누적 양도세 납부 ${_total_paid_usd:,.2f} 가 현금에서 차감되어 표시됩니다. "
+            f"(봇 텔레그램 메시지도 동일하게 반영됨)"
+        )
     with st.expander("📋 상세 매매 로그", expanded=True):
         st.dataframe(log_df.iloc[::-1], use_container_width=True)
 # ═══════════════════════════════════════════════════════════════
