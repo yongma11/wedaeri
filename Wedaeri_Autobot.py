@@ -282,6 +282,34 @@ def load_actual_balance(sh) -> dict:
         return {}
 
 
+def load_tax_payments(sh) -> list:
+    """'양도세납부' 시트에서 사용자가 기록한 납부 내역을 읽어옵니다.
+    각 항목: {date, for_year, amount_usd, amount_krw, fx_rate, note}
+    날짜 오름차순으로 정렬해 반환.
+    """
+    try:
+        ws = sh.worksheet("양도세납부")
+        records = ws.get_all_records()
+        out = []
+        for r in records:
+            try:
+                out.append({
+                    'date':       str(r.get('date', '')),
+                    'for_year':   int(float(r.get('for_year', 0))),
+                    'amount_usd': float(r.get('amount_usd', 0)),
+                    'amount_krw': float(r.get('amount_krw', 0)),
+                    'fx_rate':    float(r.get('fx_rate', 1300)),
+                    'note':       str(r.get('note', '')),
+                })
+            except Exception:
+                continue
+        out.sort(key=lambda x: x['date'])
+        return out
+    except Exception as e:
+        print(f"ℹ️ '양도세납부' 시트 없음 — 납부 차감 스킵: {e}")
+        return []
+
+
 def reconcile(virtual_shares, virtual_cash, actual, init_cap):
     if not actual: return ""
     drift_shares = virtual_shares - actual['shares']
@@ -423,6 +451,12 @@ def main():
         _cfg, START_DATE, INITIAL_CAP, INIT_CASH_PCT, dict(PARAMS),
     )
     actual_balance = load_actual_balance(sh)
+    tax_payments   = load_tax_payments(sh)
+    if tax_payments:
+        print(f"🧾 양도세 납부 기록 {len(tax_payments)} 건 로드 — 가상 잔고에 차감 적용")
+        for p in tax_payments:
+            print(f"   {p['date']} | {p['for_year']}년 분 | "
+                  f"₩{p['amount_krw']:,.0f} (≈${p['amount_usd']:,.2f}) | {p['note']}")
 
     try:
         # B. 일별 데이터
@@ -503,11 +537,31 @@ def main():
         sell_r = {'HIGH': params['sH'], 'MID': params['sM'], 'LOW': params['sL']}
         buy_r  = {'HIGH': params['bH'], 'MID': params['bM'], 'LOW': params['bL']}
 
+        # 양도세 납부 시점을 sim 의 weekly bar 와 매핑
+        # 각 weekly bar 에서 그 직전~현재 사이에 결제일이 있으면 그 weekly bar 직전에 cash 차감
+        tax_to_apply = list(tax_payments)   # 사본 (소비됨)
+        cum_paid_tax = 0.0
+        # 사용자 편의: 가장 최근 sim bar 까지 납부된 누적 금액도 별도 추적
+
         # H. 과거 매매 복기 (시작일+1 ~ 마지막 주 직전)
         for i in range(1, len(sim) - 1):
             p, prev_p, ev = float(sim.loc[i,'TQQQ']), float(sim.loc[i-1,'TQQQ']), float(sim.loc[i,'Eval'])
+            bar_date = pd.Timestamp(sim.loc[i, 'Date'])
+            prev_bar_date = pd.Timestamp(sim.loc[i-1, 'Date'])
             tier = get_tier(ev, hc, lc)
             diff = shares * (p - prev_p)
+
+            # 양도세 납부 적용: 직전 bar < 납부일 <= 현재 bar 인 결제 차감
+            still_pending = []
+            for pay in tax_to_apply:
+                pay_date = pd.Timestamp(pay['date'])
+                if prev_bar_date < pay_date <= bar_date:
+                    cash -= pay['amount_usd']
+                    cum_paid_tax += pay['amount_usd']
+                    # cash 가 음수가 되어도 표시 (강제 매도 안 함 — 실제로는 사용자가 외부에서 충당)
+                else:
+                    still_pending.append(pay)
+            tax_to_apply = still_pending
 
             if diff > 0 and shares > 0:
                 # v4.8: sell rate 동적 조정 (Task A + Task B)
@@ -520,8 +574,20 @@ def main():
                 qty = int(min(round(diff * sr_eff / p), shares))
                 shares -= qty; cash += qty * p
             elif diff < 0:
-                qty = int(min(cash, abs(diff) * buy_r[tier]) / p)
+                # cash 가 음수이거나 부족하면 매수 안 함
+                qty = int(min(max(cash, 0), abs(diff) * buy_r[tier]) / p) if cash > 0 else 0
                 shares += qty; cash -= qty * p
+
+        # 마지막 bar 이전~현재 사이의 잔여 납부 분도 적용
+        if tax_to_apply:
+            last_replay_date = pd.Timestamp(sim.loc[len(sim) - 2, 'Date'])
+            now_ts = pd.Timestamp.now().normalize()
+            for pay in tax_to_apply:
+                pay_date = pd.Timestamp(pay['date'])
+                if last_replay_date < pay_date <= now_ts:
+                    cash -= pay['amount_usd']
+                    cum_paid_tax += pay['amount_usd']
+        print(f"💰 누적 양도세 차감: ${cum_paid_tax:,.2f}")
 
         # I. 이번 주 신호
         last  = sim.iloc[-1]; prev = sim.iloc[-2]
@@ -581,13 +647,20 @@ def main():
         if v48_flags:
             v48_line = (f"\n🆕 *v4.8 효과*: {' + '.join(v48_flags)} → "
                         f"매도 배율 {sell_r[this_tier]:.2f} → {sr_eff_now:.2f}\n")
+        # 양도세 차감 라인
+        tax_line = ""
+        if cum_paid_tax > 0:
+            tax_line = (f"  📌 누적 양도세 차감 : `−${cum_paid_tax:>10,.2f}` "
+                        f"({len(tax_payments)}건 반영)\n")
+
         msg = (
             f"🚀 *[위대리 v4.8] 주간 시그널* ({today_str})\n"
             f"📡 모드: {mode_label}\n\n"
             f"💰 *자산 현황 (주문 체결 후 예상)*\n"
             f"  총 자산 : `${total_asset:>12,.2f}`  ({pnl_pct:+.2f}%)\n"
             f"  보유 주식: `{est_shares:>8,}` 주\n"
-            f"  보유 현금: `${est_cash:>12,.2f}`  (현금 {cash_pct:.1f}%)\n\n"
+            f"  보유 현금: `${est_cash:>12,.2f}`  (현금 {cash_pct:.1f}%)\n"
+            f"{tax_line}\n"
             f"🌡️ *시장 평가* : {tier_emoji} `{last_eval:.2%}`  ({this_tier})\n"
             f"  QQQ 추세 대비 {abs(last_eval):.1%} "
             f"{'고평가' if last_eval >= hc else ('저평가' if last_eval <= lc else '중립')}\n"
