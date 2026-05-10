@@ -1,8 +1,15 @@
-# wedaeri_bot.py — TQQQ 위대리 오토봇 (v4.3)
+# wedaeri_bot.py — TQQQ 위대리 오토봇 (v4.8)
 # ▸ 주간 Expanding Window OLS (wedaeri_app.py 동일 로직)
 # ▸ W-FRI resample 기반 — 금요일 휴장 주도 정확 처리
 # ▸ 3-티어 시스템 (HIGH / MID / LOW)
+# ▸ v4.8: Task A (12월 매도 축소) + Task B (HIGH-tier 모멘텀 필터)
 # ▸ Google Sheets + Telegram 자동 업데이트
+#
+# v4.8 변경사항 (vs v4.3):
+#   • Task A — 12월 매도 시 sell rate × 0.75 (양도세 이연)
+#   • Task B — HIGH 티어 + QQQ ≥ 13주MA × 1.08 일 때 sell rate × 0.70 (멜트업 보호)
+#   • 워크포워드 7-fold OOS 검증 +0.75%p CAGR 통과
+#   • 앱(wedaeri_app.py v4.8) 의 sell rate 로직과 정확히 동기화
 #
 # v4.3 변경사항 (vs v4.2):
 #   • F-가드 (변동성 정규화) 제거
@@ -44,6 +51,13 @@ PARAMS = {
     'sH': 2.0, 'sM': 0.3, 'sL': 0.2,
     'bH': 1.0, 'bM': 0.6, 'bL': 2.0,
 }
+
+# ── v4.8 OOS-검증 추가 신호 (Task A + Task B) ────────────
+USE_V48           = True    # 끄면 v4.7 동작
+DEC_SELL_SCALE    = 0.75    # 12월 매도 배율 ×0.75 (Task A)
+MA_WINDOW_WEEKS   = 13      # QQQ 이동평균 윈도우 (Task B)
+TREND_THRESHOLD   = 1.08    # QQQ ≥ MA × 1.08 시 멜트업 (Task B)
+SELL_RATE_MULT    = 0.70    # 멜트업 시 HIGH 매도 ×0.70 (Task B)
 
 # ── 실행 타이밍 가드 ─────────────────────────────────────
 # 정상 실행 윈도우 (모두 미국 동부 기준):
@@ -294,10 +308,41 @@ def get_tier(eval_val, hc, lc):
 
 
 # ─────────────────────────────────────────────────────────────
+# 4-b. v4.8 sell rate 조정 (Task A + Task B)
+# ─────────────────────────────────────────────────────────────
+def adjust_sell_rate_v48(base_sr: float, tier: str, date_t,
+                          qqq_now: float, qqq_ma: float) -> tuple[float, list[str]]:
+    """v4.8 OOS-검증된 두 가지 sell rate 조정.
+    Returns: (조정된 sr, 적용된 효과 라벨 리스트)
+    """
+    sr = base_sr
+    flags = []
+    if not USE_V48:
+        return sr, flags
+
+    # Task B: HIGH 티어 + QQQ 멜트업
+    if tier == 'HIGH' and MA_WINDOW_WEEKS > 0 and qqq_ma > 0:
+        if not pd.isna(qqq_ma) and qqq_now >= qqq_ma * TREND_THRESHOLD:
+            sr *= SELL_RATE_MULT
+            flags.append(f"멜트업필터 ×{SELL_RATE_MULT}")
+
+    # Task A: 12월 매도 축소
+    if pd.Timestamp(date_t).month == 12:
+        sr *= DEC_SELL_SCALE
+        flags.append(f"12월이연 ×{DEC_SELL_SCALE}")
+
+    return sr, flags
+
+
+# ─────────────────────────────────────────────────────────────
 # 5. 메인
 # ─────────────────────────────────────────────────────────────
 def main():
-    print("🚀 [위대리] 오토봇 v4.3 가동 시작...")
+    print("🚀 [위대리] 오토봇 v4.8 가동 시작...")
+    if USE_V48:
+        print(f"   v4.8 ON: dec×{DEC_SELL_SCALE}, HIGH 멜트업({MA_WINDOW_WEEKS}주MA×{TREND_THRESHOLD})×{SELL_RATE_MULT}")
+    else:
+        print("   v4.8 OFF — v4.7 호환 모드")
 
     # 0. 타이밍 가드
     ok_timing, timing_msg, mode = check_execution_timing()
@@ -432,6 +477,12 @@ def main():
         growth = compute_expanding_ols(qqq_weekly, W=260)
         qqq_weekly['Growth'] = growth
         qqq_weekly['Eval']   = qqq_weekly['QQQ'] / qqq_weekly['Growth'] - 1
+        # v4.8: QQQ 13주 이동평균 (Task B 모멘텀 필터용)
+        if MA_WINDOW_WEEKS > 0:
+            qqq_weekly['QQQ_MA'] = qqq_weekly['QQQ'].rolling(
+                MA_WINDOW_WEEKS, min_periods=1).mean()
+        else:
+            qqq_weekly['QQQ_MA'] = qqq_weekly['QQQ']
         weekly = qqq_weekly.merge(tqqq_weekly, on='Date', how='inner')
 
         # F. 시작일 필터
@@ -459,7 +510,14 @@ def main():
             diff = shares * (p - prev_p)
 
             if diff > 0 and shares > 0:
-                qty = int(min(round(diff * sell_r[tier] / p), shares))
+                # v4.8: sell rate 동적 조정 (Task A + Task B)
+                sr_eff, _ = adjust_sell_rate_v48(
+                    sell_r[tier], tier,
+                    sim.loc[i, 'Date'],
+                    float(sim.loc[i, 'QQQ']),
+                    float(sim.loc[i, 'QQQ_MA']),
+                )
+                qty = int(min(round(diff * sr_eff / p), shares))
                 shares -= qty; cash += qty * p
             elif diff < 0:
                 qty = int(min(cash, abs(diff) * buy_r[tier]) / p)
@@ -470,13 +528,20 @@ def main():
         last_eval  = float(last['Eval'])
         last_price = float(last['TQQQ'])
         prev_price = float(prev['TQQQ'])
+        last_qqq    = float(last['QQQ'])
+        last_qqq_ma = float(last['QQQ_MA'])
+        last_date   = last['Date']
         this_tier  = get_tier(last_eval, hc, lc)
         diff_now   = shares * (last_price - prev_price)
+
+        # v4.8: 이번 주 sell rate 효과 미리 계산 (텔레그램 메시지에 표시)
+        sr_eff_now, v48_flags = adjust_sell_rate_v48(
+            sell_r[this_tier], this_tier, last_date, last_qqq, last_qqq_ma)
 
         action, order_qty = "관망", 0
         if diff_now > 0 and shares > 0:
             action    = "매도"
-            order_qty = int(min(round(diff_now * sell_r[this_tier] / last_price), shares))
+            order_qty = int(min(round(diff_now * sr_eff_now / last_price), shares))
         elif diff_now < 0:
             action    = "매수"
             order_qty = int(min(cash, abs(diff_now) * buy_r[this_tier]) / last_price)
@@ -511,8 +576,13 @@ def main():
                         'near_close':'Near-close (마감 직전, 즉시 LOC 권장)',
                         'post_close':'Post-close (마감가 확정)'}.get(mode, '')
         today_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+        # v4.8 필터 효과 라인 (적용된 효과만 표시)
+        v48_line = ""
+        if v48_flags:
+            v48_line = (f"\n🆕 *v4.8 효과*: {' + '.join(v48_flags)} → "
+                        f"매도 배율 {sell_r[this_tier]:.2f} → {sr_eff_now:.2f}\n")
         msg = (
-            f"🚀 *[위대리 v4.3] 주간 시그널* ({today_str})\n"
+            f"🚀 *[위대리 v4.8] 주간 시그널* ({today_str})\n"
             f"📡 모드: {mode_label}\n\n"
             f"💰 *자산 현황 (주문 체결 후 예상)*\n"
             f"  총 자산 : `${total_asset:>12,.2f}`  ({pnl_pct:+.2f}%)\n"
@@ -520,8 +590,11 @@ def main():
             f"  보유 현금: `${est_cash:>12,.2f}`  (현금 {cash_pct:.1f}%)\n\n"
             f"🌡️ *시장 평가* : {tier_emoji} `{last_eval:.2%}`  ({this_tier})\n"
             f"  QQQ 추세 대비 {abs(last_eval):.1%} "
-            f"{'고평가' if last_eval >= hc else ('저평가' if last_eval <= lc else '중립')}\n\n"
-            f"🎯 *이번 주 LOC 주문*\n"
+            f"{'고평가' if last_eval >= hc else ('저평가' if last_eval <= lc else '중립')}\n"
+            f"  QQQ 13주 MA: `${last_qqq_ma:.2f}` (현재 `${last_qqq:.2f}`, "
+            f"비율 ×{last_qqq/max(last_qqq_ma,1e-9):.3f})"
+            f"{v48_line}"
+            f"\n🎯 *이번 주 LOC 주문*\n"
             f"  {action_emoji} 상태       : *{action}*\n"
             f"  📦 주문 수량   : *{order_qty}* 주\n"
             f"  💲 기준 가격   : `${cur_p}`\n"
