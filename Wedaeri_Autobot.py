@@ -60,12 +60,15 @@ TREND_THRESHOLD   = 1.08    # QQQ ≥ MA × 1.08 시 멜트업 (Task B)
 SELL_RATE_MULT    = 0.70    # 멜트업 시 HIGH 매도 ×0.70 (Task B)
 
 # ── 실행 타이밍 가드 ─────────────────────────────────────
-# 정상 실행 윈도우 (모두 미국 동부 기준):
+# 정상(=실거래) 실행 윈도우 (모두 미국 동부 기준):
 #   ① 금요일 04:00 ~ 09:30  (pre-market: 어제 종가 기준, 오늘 LOC 주문 준비)
 #   ② 금요일 15:00 ~ 16:05  (near-close: 거의 마감가로 즉시 LOC 주문, KST 토 04:00~05:05)
 #   ③ 금요일 16:05 ~ 23:59  (post-close: 마감가로 다음주 신호 확정)
 #   ④ 토요일 00:00 ~ 06:00  (post-close 한국시간 새벽 커버)
-STRICT_TIMING = True
+# 그 외 시간에 실행되면 자동으로 'test' 모드로 진입:
+#   - 지난 종가 기준 신호만 계산 (yfinance 의 가장 최근 일별 종가)
+#   - Google Sheets 의 주문표(L4/M4/N4/O4) 는 *업데이트 안 함* → 자동매매 보호
+#   - 텔레그램에 [🧪 테스트 모드] 라벨 명시
 
 # Telegram
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
@@ -80,8 +83,9 @@ print(f"🔍 ENV CHECK: BOT_TOKEN={'있음(' + str(len(BOT_TOKEN)) + '자)' if B
 # ─────────────────────────────────────────────────────────────
 def check_execution_timing() -> tuple[bool, str, str]:
     """
-    Returns: (정상여부, 메시지, mode)
-      mode ∈ {'pre_open', 'near_close', 'post_close', 'invalid'}
+    Returns: (실거래여부, 메시지, mode)
+      mode ∈ {'pre_open', 'near_close', 'post_close', 'test'}
+      실거래여부=False 면 'test' 모드 — 지난 종가 기준 시뮬, Sheets 업데이트 안 함
     """
     et = datetime.now(ZoneInfo("America/New_York"))
     weekday = et.weekday()
@@ -115,14 +119,12 @@ def check_execution_timing() -> tuple[bool, str, str]:
             f"✅ Post-close 모드: ET {et:%Y-%m-%d %H:%M} (토요일 새벽)"
         ), 'post_close'
 
+    # ⑤ 그 외 — 테스트 모드 (지난 종가 기준 신호만 계산, 시트 업데이트는 건너뜀)
     return False, (
-        f"⚠️ 비정상 타이밍: ET {et:%Y-%m-%d %H:%M} (요일={weekday}). "
-        f"정상 실행 시간:\n"
-        f"  • 금요일 ET 04:00~09:30 (pre-market, KST 17:00~22:30)\n"
-        f"  • 금요일 ET 15:00~16:05 (near-close, KST 토 04:00~05:05)\n"
-        f"  • 금요일 ET 16:05~23:59 (post-close, KST 토 05:05~12:59)\n"
-        f"  • 토요일 ET 00:00~06:00 (post-close 연장)"
-    ), 'invalid'
+        f"🧪 테스트 모드: ET {et:%Y-%m-%d %H:%M} (요일={weekday})\n"
+        f"   정규 실행 윈도우 밖 — 지난 종가 기준으로 신호만 계산\n"
+        f"   ⚠️ Google Sheets 주문표 업데이트는 건너뜁니다 (자동매매 보호)"
+    ), 'test'
 
 
 # ─────────────────────────────────────────────────────────────
@@ -372,14 +374,10 @@ def main():
     else:
         print("   v4.8 OFF — v4.7 호환 모드")
 
-    # 0. 타이밍 가드
-    ok_timing, timing_msg, mode = check_execution_timing()
+    # 0. 타이밍 가드 — 정규 윈도우 밖이면 'test' 모드로 진입 (차단하지 않음)
+    is_live, timing_msg, mode = check_execution_timing()
     print(timing_msg)
-    if not ok_timing:
-        send_telegram(timing_msg)
-        if STRICT_TIMING:
-            print("❌ STRICT_TIMING=True → 봇 중단 (False 로 바꾸면 강제 진행)")
-            return
+    is_test_mode = (mode == 'test')
 
     # A. GCP 인증
     creds_raw = os.environ.get('GCP_CREDENTIALS')
@@ -485,9 +483,10 @@ def main():
         live_tqqq = float(yf.Ticker("TQQQ").fast_info['last_price'])
         live_qqq  = float(yf.Ticker("QQQ").fast_info['last_price'])
 
-        if mode == 'pre_open':
-            # pre-market: live 값은 어제(목요일) 종가 — df 가 이미 그걸 가지고 있음
-            # cur_p 는 df 의 마지막 종가(목요일).
+        if mode in ('pre_open', 'test'):
+            # pre-market & test: df 의 가장 최근 종가를 그대로 사용
+            #   - pre_open: 어제(목요일) 종가
+            #   - test: 가장 최근 거래일의 종가 (장 마감 후라면 직전 영업일)
             cur_p = round(float(df['TQQQ'].iloc[-1]), 2)
         else:  # near_close 또는 post_close — 둘 다 오늘 가격을 사용
             # near_close: live_tqqq 는 장중 실시간 가격 (마감가에 매우 근접)
@@ -628,19 +627,23 @@ def main():
         cash_pct = est_cash / total_asset * 100 if total_asset > 0 else 0
         recon_msg = reconcile(est_shares, est_cash, actual_balance, initial_cap)
 
-        # K. Sheets 업데이트
-        ws.update_acell('L4', action)
-        ws.update_acell('M4', 'LOC' if action != "관망" else "-")
-        ws.update_acell('N4', cur_p)
-        ws.update_acell('O4', order_qty)
-        print(f"📤 시트 업데이트: {action} {order_qty}주 @ ${cur_p}")
+        # K. Sheets 업데이트 — 테스트 모드면 건너뜀 (자동매매 보호)
+        if not is_test_mode:
+            ws.update_acell('L4', action)
+            ws.update_acell('M4', 'LOC' if action != "관망" else "-")
+            ws.update_acell('N4', cur_p)
+            ws.update_acell('O4', order_qty)
+            print(f"📤 시트 업데이트: {action} {order_qty}주 @ ${cur_p}")
+        else:
+            print(f"🧪 테스트 모드 — 시트 업데이트 *건너뜀*. 시뮬 결과: {action} {order_qty}주 @ ${cur_p}")
 
         # L. Telegram
         tier_emoji   = {'HIGH':'🟡','MID':'🔵','LOW':'🟢'}[this_tier]
         action_emoji = {'매도':'📈','매수':'📉','관망':'⏸'}[action]
         mode_label   = {'pre_open':'Pre-market (어제 종가 기준, 오늘 LOC 준비)',
                         'near_close':'Near-close (마감 직전, 즉시 LOC 권장)',
-                        'post_close':'Post-close (마감가 확정)'}.get(mode, '')
+                        'post_close':'Post-close (마감가 확정)',
+                        'test':'🧪 테스트 모드 (지난 종가 기준 시뮬, 시트 미업데이트)'}.get(mode, '')
         today_str = datetime.now().strftime('%Y-%m-%d %H:%M')
         # v4.8 필터 효과 라인 (적용된 효과만 표시)
         v48_line = ""
@@ -653,8 +656,9 @@ def main():
             tax_line = (f"  📌 누적 양도세 차감 : `−${cum_paid_tax:>10,.2f}` "
                         f"({len(tax_payments)}건 반영)\n")
 
+        title_prefix = "🧪 *[위대리 v4.8 — 테스트]*" if is_test_mode else "🚀 *[위대리 v4.8] 주간 시그널*"
         msg = (
-            f"🚀 *[위대리 v4.8] 주간 시그널* ({today_str})\n"
+            f"{title_prefix} ({today_str})\n"
             f"📡 모드: {mode_label}\n\n"
             f"💰 *자산 현황 (주문 체결 후 예상)*\n"
             f"  총 자산 : `${total_asset:>12,.2f}`  ({pnl_pct:+.2f}%)\n"
@@ -674,7 +678,12 @@ def main():
             f"  📊 거래 후 잔고: *{est_shares:,}* 주\n"
             f"{recon_msg}\n"
         )
-        if action != "관망":
+        if is_test_mode:
+            msg += (
+                f"⚠️ *시뮬 결과만 확인용* — 시트는 업데이트되지 않았고 자동매매도 작동 안 함.\n"
+                f"  실제 주문은 정규 윈도우 (KST 토 04:42 등) 에서 자동 처리됩니다.\n"
+            )
+        elif action != "관망":
             urgency = ("⚡ *지금 즉시* MTS 에서 LOC 주문 입력 (마감까지 시간 적음)\n"
                        if mode == 'near_close' else "")
             msg += (
