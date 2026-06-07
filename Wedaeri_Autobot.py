@@ -30,8 +30,10 @@ import yfinance as yf
 import gspread
 import os
 import json
+import time
 import requests
 import warnings
+from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -378,6 +380,91 @@ def adjust_sell_rate_v48(base_sr: float, tier: str, date_t,
 
 
 # ─────────────────────────────────────────────────────────────
+# 4-c. yfinance 안전 fetch (재시도 + 캐시 fallback)
+# ─────────────────────────────────────────────────────────────
+CACHE_FILE = Path(__file__).parent / "wedaeri_yf_cache.parquet"
+
+def _save_cache(df: pd.DataFrame):
+    try:
+        df.to_parquet(CACHE_FILE, index=False)
+    except Exception as e:
+        # parquet 의존성 (pyarrow/fastparquet) 없으면 csv 로 폴백
+        try:
+            df.to_csv(CACHE_FILE.with_suffix('.csv'), index=False)
+        except Exception:
+            print(f"⚠️ 캐시 저장 실패: {e}")
+
+def _load_cache() -> pd.DataFrame:
+    """캐시 로드. 성공 시 (df, age_hours), 실패 시 (None, None)."""
+    for path in (CACHE_FILE, CACHE_FILE.with_suffix('.csv')):
+        if not path.exists():
+            continue
+        try:
+            if path.suffix == '.parquet':
+                df = pd.read_parquet(path)
+            else:
+                df = pd.read_csv(path, parse_dates=['Date'])
+            df['Date'] = pd.to_datetime(df['Date'])
+            age_h = (datetime.now().timestamp() - path.stat().st_mtime) / 3600
+            return df, age_h
+        except Exception as e:
+            print(f"⚠️ 캐시 로드 실패 ({path.name}): {e}")
+    return None, None
+
+def fetch_yf_with_retry(tickers: list[str], start: str, end: str,
+                       max_retries: int = 4) -> tuple[pd.DataFrame, str]:
+    """yfinance 다운로드 + 지수 백오프 재시도 + 빈 응답 / rate limit 진단.
+    Returns: (df, status_msg).  df 가 None 이면 status_msg 에 사유."""
+    last_err = None
+    last_rows = -1
+    for attempt in range(1, max_retries + 1):
+        try:
+            df_raw = yf.download(
+                tickers, start=start, end=end,
+                auto_adjust=True, progress=False, threads=False,
+            )
+            if isinstance(df_raw.columns, pd.MultiIndex):
+                df = df_raw['Close'].copy()
+            else:
+                df = df_raw.copy()
+            df = df.dropna().reset_index()
+            if 'Date' not in df.columns:
+                df.rename(columns={'index': 'Date'}, inplace=True)
+            df['Date'] = pd.to_datetime(df['Date'])
+            last_rows = len(df)
+            missing = [t for t in tickers if t not in df.columns]
+            if not df.empty and not missing:
+                return df, f"✅ yfinance fetch 성공 (시도 {attempt}회, {len(df)}행)"
+            last_err = (f"빈 응답 또는 누락 컬럼 (rows={len(df)}, "
+                        f"columns={list(df.columns)}, missing={missing})")
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+        wait_s = min(2 ** attempt, 16)   # 2, 4, 8, 16
+        print(f"🔄 yfinance 시도 {attempt}/{max_retries} 실패 — {last_err}. "
+              f"{wait_s}초 후 재시도...")
+        time.sleep(wait_s)
+    return None, f"⚠️ {max_retries}회 모두 실패. 마지막 에러: {last_err} (last_rows={last_rows})"
+
+
+def fetch_live_price_safe(ticker: str) -> float | None:
+    """fast_info live price + 폴백 — 실패 시 None."""
+    try:
+        return float(yf.Ticker(ticker).fast_info['last_price'])
+    except Exception as e:
+        print(f"⚠️ {ticker} live price fetch 실패: {e}")
+        # 폴백 1: 1일치 download
+        try:
+            d = yf.download(ticker, period='5d', interval='1d',
+                            auto_adjust=True, progress=False, threads=False)
+            if not d.empty:
+                col = 'Close' if 'Close' in d.columns else d.columns[0]
+                return float(d[col].dropna().iloc[-1])
+        except Exception as e2:
+            print(f"⚠️ {ticker} 5d 폴백도 실패: {e2}")
+        return None
+
+
+# ─────────────────────────────────────────────────────────────
 # 5. 메인
 # ─────────────────────────────────────────────────────────────
 def main():
@@ -477,31 +564,49 @@ def main():
         print("ℹ️ 양도세 봇 차감 토글 OFF — 시뮬은 세전 잔고로 진행 (Streamlit 에서 토글 ON+저장 시 반영)")
 
     try:
-        # B. 일별 데이터
+        # B. 일별 데이터 — 재시도 + 캐시 폴백
         end_dt = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-        df_raw = yf.download(
-            ["QQQ", "TQQQ"], start="2010-01-01", end=end_dt,
-            auto_adjust=True, progress=False
-        )
-        df = (df_raw['Close'] if isinstance(df_raw.columns, pd.MultiIndex)
-              else df_raw).dropna().reset_index()
-        if 'Date' not in df.columns:
-            df.rename(columns={'index': 'Date'}, inplace=True)
-        df['Date'] = pd.to_datetime(df['Date'])
-        # ── 가드: yfinance 실패/빈 응답 ──────────────────────
-        if df.empty or 'TQQQ' not in df.columns or 'QQQ' not in df.columns:
-            err = (f"❌ [위대리 봇] yfinance 데이터 비어 있음. "
-                   f"rows={len(df)}, columns={list(df.columns)}. "
-                   f"잠시 후 재시도하거나 yfinance rate limit 확인 필요.")
-            print(err); send_telegram(err); return
-        if len(df) < 260:   # 최소 5년치 일별 데이터
-            err = (f"❌ [위대리 봇] 데이터 부족: {len(df)}행 (5년치 미만). "
-                   f"OLS 회귀 불가능.")
+        df, fetch_msg = fetch_yf_with_retry(["QQQ", "TQQQ"], "2010-01-01", end_dt)
+        print(fetch_msg)
+        if df is None or df.empty or 'TQQQ' not in df.columns or 'QQQ' not in df.columns:
+            # 캐시 폴백 시도
+            cached_df, cached_age_h = _load_cache()
+            if cached_df is not None and not cached_df.empty:
+                if cached_age_h <= 168:   # 7일 이내 캐시
+                    print(f"💾 캐시 fallback 사용 — {cached_age_h:.1f}시간 전 데이터 ({len(cached_df)}행)")
+                    df = cached_df
+                    send_telegram(
+                        f"⚠️ *[위대리 봇] yfinance 데이터 부재 → 캐시 fallback*\n"
+                        f"마지막 정상 데이터: {cached_age_h:.1f}시간 전\n"
+                        f"행 수: {len(df)}\n"
+                        f"이번 시그널은 *근사치* — 캐시가 7일 이상 오래되면 봇이 중단됩니다."
+                    )
+                else:
+                    err = (f"❌ [위대리 봇] yfinance 실패 + 캐시도 {cached_age_h/24:.1f}일 오래됨. "
+                           f"수동 점검 필요.\n진단: {fetch_msg}")
+                    print(err); send_telegram(err); return
+            else:
+                err = (f"❌ [위대리 봇] yfinance 데이터 없음 (캐시도 없음).\n"
+                       f"진단: {fetch_msg}\n"
+                       f"가능 원인: ① yfinance rate limit (15~30분 대기) "
+                       f"② Yahoo Finance API 일시 다운 ③ `pip install -U yfinance` 필요")
+                print(err); send_telegram(err); return
+        else:
+            # 정상 fetch 성공 → 캐시 갱신
+            _save_cache(df)
+        if len(df) < 260:
+            err = (f"❌ [위대리 봇] 데이터 부족: {len(df)}행 (5년치 미만). OLS 회귀 불가능.")
             print(err); send_telegram(err); return
 
-        # C. 라이브 가격 — mode 별 분기
-        live_tqqq = float(yf.Ticker("TQQQ").fast_info['last_price'])
-        live_qqq  = float(yf.Ticker("QQQ").fast_info['last_price'])
+        # C. 라이브 가격 — mode 별 분기 (안전 fetch)
+        live_tqqq = fetch_live_price_safe("TQQQ")
+        live_qqq  = fetch_live_price_safe("QQQ")
+        if live_tqqq is None or live_qqq is None:
+            # 라이브 가격 실패 시 df 의 마지막 종가 사용
+            live_tqqq = live_tqqq or float(df['TQQQ'].iloc[-1])
+            live_qqq  = live_qqq  or float(df['QQQ'].iloc[-1])
+            print(f"⚠️ 라이브 가격 fetch 실패 — df 마지막 종가 사용 "
+                  f"(TQQQ=${live_tqqq:.2f}, QQQ=${live_qqq:.2f})")
 
         if mode in ('pre_open', 'test'):
             # pre-market & test: df 의 가장 최근 종가를 그대로 사용
