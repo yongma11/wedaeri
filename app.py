@@ -35,7 +35,7 @@ CONFIG_FILE = Path(__file__).parent / "wedaeri_config.json"
 SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
 DEFAULT_CONFIG = {
     'start_date': '2025-12-26',
-    'cap':        135000,
+    'cap':        108000,
     'cash':       45,
     'bt_cap':     10000,
     'bt_cash':    45,
@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     'hc':  6.0,   'lc': -6.0,
     'sH':  2.0,   'sM':  0.3,   'sL': 0.2,
     'bH':  1.0,   'bM':  0.6,   'bL': 2.0,
+    'tax_apply_to_bot': False,   # 봇 가상 잔고에 양도세 차감 반영 여부 (기본 OFF)
 }
 def load_config() -> dict:
     if CONFIG_FILE.exists():
@@ -73,6 +74,8 @@ def save_config(ss) -> dict:
         'bH':  float(ss.get('p_bH',  DEFAULT_CONFIG['bH'])),
         'bM':  float(ss.get('p_bM',  DEFAULT_CONFIG['bM'])),
         'bL':  float(ss.get('p_bL',  DEFAULT_CONFIG['bL'])),
+        'tax_apply_to_bot': bool(ss.get('p_tax_apply_to_bot',
+                                        DEFAULT_CONFIG['tax_apply_to_bot'])),
     }
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -256,6 +259,7 @@ if '_cfg_loaded' not in st.session_state:
     ss['p_bH']      = _cfg['bH']
     ss['p_bM']      = _cfg['bM']
     ss['p_bL']      = _cfg['bL']
+    ss['p_tax_apply_to_bot'] = bool(_cfg.get('tax_apply_to_bot', False))
 # ─────────────────────────────────────────────────────────────
 # 차트 공통 레이아웃
 # ─────────────────────────────────────────────────────────────
@@ -945,6 +949,37 @@ with tab1:
         )
 
     with st.expander("🧾 양도세 납부 관리", expanded=_is_tax_window):
+        # 봇 차감 옵션 (기본 OFF) — 사용자가 명시적으로 켜고 저장해야 봇이 가상 잔고에서 차감
+        with st.container(border=True):
+            cc_a, cc_b = st.columns([2, 1])
+            with cc_a:
+                _tax_apply_now = st.checkbox(
+                    "🤖 봇의 가상 잔고에 양도세 차감 반영",
+                    value=bool(st.session_state.get('p_tax_apply_to_bot', False)),
+                    key='p_tax_apply_to_bot',
+                    help="OFF (기본): 봇은 세전 가상 잔고로 매매 시그널을 계산.\n"
+                         "ON: 봇이 이 시트의 양도세 납부 기록을 시뮬에 반영해 cash 를 차감.\n"
+                         "→ 운용 계획이 이미 세워져 있다면 OFF, 봇 잔고와 실잔고를 정확히 맞추고 싶으면 ON.",
+                )
+            with cc_b:
+                if st.button("💾 봇에 반영 (저장)", use_container_width=True,
+                             key='btn_save_tax_apply'):
+                    cfg = save_config(st.session_state)
+                    ok, err = save_config_to_sheets(cfg)
+                    if ok:
+                        st.toast(
+                            f"✅ 저장 완료. 봇 양도세 차감: "
+                            f"{'ON' if _tax_apply_now else 'OFF'}",
+                            icon="💾",
+                        )
+                    else:
+                        st.toast("✅ 로컬 저장 완료 (Sheets 미동기화)", icon="💾")
+            st.caption(
+                f"현재 상태: **{'🟢 봇이 양도세 반영 중' if _tax_apply_now else '⚪ 봇은 양도세 무시 (세전 시뮬)'}**"
+                + (" — Streamlit 화면도 후처리로 차감 표시" if _tax_apply_now
+                   else " — Streamlit 후처리 차감 비활성")
+            )
+
         col_p1, col_p2 = st.columns([1, 1])
 
         # 좌측: 새 납부 기록 입력 폼
@@ -1047,25 +1082,34 @@ with tab1:
                         else:
                             st.error(f"삭제 실패: {err}")
 
-    # ── 계좌 현황 (양도세 차감 반영) ─────────────────────────
+    # ── 계좌 현황 (양도세 차감은 토글 ON 일 때만) ──────────────
     st.subheader("💰 내 계좌 현황")
-    _adjusted_total = float(last['총자산']) - _total_paid_usd
-    _adjusted_cash  = float(last['현금'])    - _total_paid_usd
+    _tax_apply_now = bool(st.session_state.get('p_tax_apply_to_bot', False))
+    # 봇 차감 토글이 ON 일 때만 양도세를 후처리 차감해서 표시
+    _eff_paid_usd = _total_paid_usd if _tax_apply_now else 0.0
+    _adjusted_total = float(last['총자산']) - _eff_paid_usd
+    _adjusted_cash  = float(last['현금'])    - _eff_paid_usd
     _adjusted_cash_pct = (_adjusted_cash / _adjusted_total * 100
                           if _adjusted_total > 0 else 0)
     _adjusted_pnl_pct = (_adjusted_total / st_cap - 1) * 100 if st_cap > 0 else 0
     a1, a2, a3, a4, a5 = st.columns(5)
     a1.metric("보유 수량",  f"{last['보유수량']:,} 주")
     a2.metric("보유 현금",  f"${_adjusted_cash:,.2f}",
-              f"−양도세 ${_total_paid_usd:,.0f}" if _total_paid_usd > 0 else None)
-    a3.metric("수익률 (세후)", f"{_adjusted_pnl_pct:+.2f}%",
-              f"세전 {last['수익률']}" if _total_paid_usd > 0 else None)
+              f"−양도세 ${_eff_paid_usd:,.0f}" if _eff_paid_usd > 0 else None)
+    a3.metric("수익률" + (" (세후)" if _eff_paid_usd > 0 else ""),
+              f"{_adjusted_pnl_pct:+.2f}%",
+              f"세전 {last['수익률']}" if _eff_paid_usd > 0 else None)
     a4.metric("평가 금액",  f"${last['보유수량'] * latest_tqqq:,.2f}")
     a5.metric("현금 비중",  f"{_adjusted_cash_pct:.2f}%")
-    if _total_paid_usd > 0:
+    if _eff_paid_usd > 0:
         st.caption(
-            f"💡 누적 양도세 납부 ${_total_paid_usd:,.2f} 가 현금에서 차감되어 표시됩니다. "
-            f"(봇 텔레그램 메시지도 동일하게 반영됨)"
+            f"💡 누적 양도세 납부 ${_eff_paid_usd:,.2f} 가 현금에서 차감되어 표시됩니다 "
+            f"(봇 차감 토글 ON)."
+        )
+    elif _total_paid_usd > 0 and not _tax_apply_now:
+        st.caption(
+            f"ℹ️ 양도세 납부 기록 ${_total_paid_usd:,.2f} 이 있으나 "
+            f"*봇 차감 토글이 OFF* 이라 화면·봇 모두 세전 잔고를 표시 중입니다."
         )
     with st.expander("📋 상세 매매 로그", expanded=True):
         st.dataframe(log_df.iloc[::-1], use_container_width=True)
