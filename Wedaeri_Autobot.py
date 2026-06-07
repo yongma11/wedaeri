@@ -228,13 +228,23 @@ def load_config_from_sheets(sh) -> dict:
 def apply_sheets_config(cfg, start_date, initial_cap, init_cash_pct, params):
     """Sheets에서 읽은 설정을 실제 변수에 반영합니다.
     use_volF 키는 v4.3 에서 무시 — F-가드 코드 자체가 제거됨.
+    Returns: (start_date, initial_cap, init_cash_pct, params, tax_apply_to_bot)
     """
     if not cfg:
-        return start_date, initial_cap, init_cash_pct, params
+        return start_date, initial_cap, init_cash_pct, params, False
 
     def _f(key, default):
         try: return float(cfg[key])
         except (KeyError, ValueError, TypeError): return default
+
+    def _b(key, default):
+        """Bool 파싱: 'True'/'true'/'1' → True, 'False'/'false'/'0' → False"""
+        raw = cfg.get(key)
+        if raw is None: return default
+        s = str(raw).strip().lower()
+        if s in ('true', '1', 'yes', 'on'): return True
+        if s in ('false', '0', 'no', 'off', ''): return False
+        return default
 
     new_start    = str(cfg.get('start_date', start_date))[:10]
     new_cap      = _f('cap',  initial_cap)
@@ -247,17 +257,20 @@ def apply_sheets_config(cfg, start_date, initial_cap, init_cash_pct, params):
         'bH': _f('bH', params['bH']), 'bM': _f('bM', params['bM']),
         'bL': _f('bL', params['bL']),
     }
+    tax_apply = _b('tax_apply_to_bot', False)
+
     print(f"📋 Sheets 설정 로드 완료")
     print(f"   시작일: {new_start} | 원금: ${new_cap:,.0f} | 초기현금: {new_cash_pct:.0%}")
     print(f"   hc={new_params['hc']:.0%} / lc={new_params['lc']:.0%}")
     print(f"   매도 H/M/L: {new_params['sH']}/{new_params['sM']}/{new_params['sL']}")
     print(f"   매수 H/M/L: {new_params['bH']}/{new_params['bM']}/{new_params['bL']}")
+    print(f"   양도세 봇 차감: {'ON' if tax_apply else 'OFF (기본)'}")
 
     # use_volF 키가 시트에 있으면 안내만 출력 (실제로는 무시됨)
     if 'use_volF' in cfg:
         print(f"   ℹ️ use_volF={cfg['use_volF']} 시트에 있으나 v4.3 봇은 F-가드 미적용")
 
-    return new_start, new_cap, new_cash_pct, new_params
+    return new_start, new_cap, new_cash_pct, new_params, tax_apply
 
 
 # ─────────────────────────────────────────────────────────────
@@ -445,16 +458,23 @@ def main():
 
     # A-2. 설정 로드
     _cfg = load_config_from_sheets(sh)
-    start_date, initial_cap, init_cash_pct, params = apply_sheets_config(
+    start_date, initial_cap, init_cash_pct, params, tax_apply_to_bot = apply_sheets_config(
         _cfg, START_DATE, INITIAL_CAP, INIT_CASH_PCT, dict(PARAMS),
     )
     actual_balance = load_actual_balance(sh)
-    tax_payments   = load_tax_payments(sh)
-    if tax_payments:
-        print(f"🧾 양도세 납부 기록 {len(tax_payments)} 건 로드 — 가상 잔고에 차감 적용")
-        for p in tax_payments:
-            print(f"   {p['date']} | {p['for_year']}년 분 | "
-                  f"₩{p['amount_krw']:,.0f} (≈${p['amount_usd']:,.2f}) | {p['note']}")
+    # 양도세 납부 차감 — tax_apply_to_bot 토글 ON 일 때만 적용
+    if tax_apply_to_bot:
+        tax_payments = load_tax_payments(sh)
+        if tax_payments:
+            print(f"🧾 양도세 납부 기록 {len(tax_payments)} 건 로드 — 가상 잔고에 차감 적용 (토글 ON)")
+            for p in tax_payments:
+                print(f"   {p['date']} | {p['for_year']}년 분 | "
+                      f"₩{p['amount_krw']:,.0f} (≈${p['amount_usd']:,.2f}) | {p['note']}")
+        else:
+            print("ℹ️ 양도세 토글 ON 이지만 시트에 납부 기록 없음")
+    else:
+        tax_payments = []
+        print("ℹ️ 양도세 봇 차감 토글 OFF — 시뮬은 세전 잔고로 진행 (Streamlit 에서 토글 ON+저장 시 반영)")
 
     try:
         # B. 일별 데이터
