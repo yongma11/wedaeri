@@ -1,28 +1,24 @@
-# wedaeri_bot.py — TQQQ 위대리 오토봇 (v4.8)
+# wedaeri_bot.py — TQQQ 위대리 오토봇 (v5.1)
 # ▸ 주간 Expanding Window OLS (wedaeri_app.py 동일 로직)
 # ▸ W-FRI resample 기반 — 금요일 휴장 주도 정확 처리
 # ▸ 3-티어 시스템 (HIGH / MID / LOW)
 # ▸ v4.8: Task A (12월 매도 축소) + Task B (HIGH-tier 모멘텀 필터)
 # ▸ Google Sheets + Telegram 자동 업데이트
 #
+# v5.1 변경사항 (vs v5.0):
+#   • SGOV 파킹 로직 전면 제거 — RP 자동투자로 대체 (복잡도 감소)
+#   • 매매 엔진은 v4.8 과 동일 — 이 봇이 *기준 엔진* 이며,
+#     앱(wedaeri_app.py v5.1)이 이 봇의 주간 패널 구성에 맞춰 수정됨:
+#     금요일 휴장 주 포함 / QQQ_MA 전체 히스토리 / 초기현금 = 원금-주식매수액
+#
 # v4.8 변경사항 (vs v4.3):
 #   • Task A — 12월 매도 시 sell rate × 0.75 (양도세 이연)
 #   • Task B — HIGH 티어 + QQQ ≥ 13주MA × 1.08 일 때 sell rate × 0.70 (멜트업 보호)
 #   • 워크포워드 7-fold OOS 검증 +0.75%p CAGR 통과
-#   • 앱(wedaeri_app.py v4.8) 의 sell rate 로직과 정확히 동기화
 #
-# v4.3 변경사항 (vs v4.2):
-#   • F-가드 (변동성 정규화) 제거
-#       — 사용자 실데이터 운용 구간에서 성과 저하 확인됨
-#       — 워크포워드 평균에서는 Calmar 개선이지만 단기 구간에선 변동성 추정 노이즈가 큼
-#       — 향후 충분한 운용 데이터가 쌓이면 재검토 가능
-#   • v4.1 의 버그 수정 + v4.2 의 pre-market 타이밍 가드는 모두 유지
-#
-# v4.1/v4.2 유지 사항:
+# v4.1~v4.3 유지 사항:
 #   • 실행 타이밍 가드 — 금요일 ET 04:00–09:30 (pre-market) + 16:05–토 06:00 (post-close)
-#   • PnL 계산이 Sheets 의 initial_cap 사용 (상수 제거)
-#   • 봇 가상잔고 vs 실잔고 reconciliation
-#   • 주석 +6% 정정
+#   • PnL 계산이 Sheets 의 initial_cap 사용 / reconciliation / F-가드 제거
 
 import pandas as pd
 import numpy as np
@@ -121,7 +117,7 @@ def check_execution_timing() -> tuple[bool, str, str]:
             f"✅ Post-close 모드: ET {et:%Y-%m-%d %H:%M} (토요일 새벽)"
         ), 'post_close'
 
-    # ⑤ 그 외 — 테스트 모드 (지난 종가 기준 신호만 계산, 시트 업데이트는 건너뜀)
+    # ⑤ 그 외 — 테스트 모드
     return False, (
         f"🧪 테스트 모드: ET {et:%Y-%m-%d %H:%M} (요일={weekday})\n"
         f"   정규 실행 윈도우 밖 — 지난 종가 기준으로 신호만 계산\n"
@@ -184,10 +180,8 @@ def send_telegram(text: str) -> bool:
         r = requests.post(url, json={
             "chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"
         }, timeout=10)
-        # 텔레그램 API 응답 상태 검증
         if r.status_code != 200:
             print(f"🔴 Telegram API 에러 {r.status_code}: {r.text[:300]}")
-            # Markdown 파싱 에러일 가능성 → plain text 로 재시도
             if r.status_code == 400 and 'parse' in r.text.lower():
                 print("   ↻ Markdown 제거하고 plain text 로 재시도...")
                 r2 = requests.post(url, json={
@@ -232,21 +226,21 @@ def apply_sheets_config(cfg, start_date, initial_cap, init_cash_pct, params):
     use_volF 키는 v4.3 에서 무시 — F-가드 코드 자체가 제거됨.
     Returns: (start_date, initial_cap, init_cash_pct, params, tax_apply_to_bot)
     """
-    if not cfg:
-        return start_date, initial_cap, init_cash_pct, params, False
-
     def _f(key, default):
         try: return float(cfg[key])
         except (KeyError, ValueError, TypeError): return default
 
     def _b(key, default):
         """Bool 파싱: 'True'/'true'/'1' → True, 'False'/'false'/'0' → False"""
-        raw = cfg.get(key)
+        raw = cfg.get(key) if cfg else None
         if raw is None: return default
         s = str(raw).strip().lower()
         if s in ('true', '1', 'yes', 'on'): return True
         if s in ('false', '0', 'no', 'off', ''): return False
         return default
+
+    if not cfg:
+        return start_date, initial_cap, init_cash_pct, params, False
 
     new_start    = str(cfg.get('start_date', start_date))[:10]
     new_cap      = _f('cap',  initial_cap)
@@ -268,9 +262,8 @@ def apply_sheets_config(cfg, start_date, initial_cap, init_cash_pct, params):
     print(f"   매수 H/M/L: {new_params['bH']}/{new_params['bM']}/{new_params['bL']}")
     print(f"   양도세 봇 차감: {'ON' if tax_apply else 'OFF (기본)'}")
 
-    # use_volF 키가 시트에 있으면 안내만 출력 (실제로는 무시됨)
     if 'use_volF' in cfg:
-        print(f"   ℹ️ use_volF={cfg['use_volF']} 시트에 있으나 v4.3 봇은 F-가드 미적용")
+        print(f"   ℹ️ use_volF={cfg['use_volF']} 시트에 있으나 v4.3+ 봇은 F-가드 미적용")
 
     return new_start, new_cap, new_cash_pct, new_params, tax_apply
 
@@ -388,13 +381,12 @@ def _save_cache(df: pd.DataFrame):
     try:
         df.to_parquet(CACHE_FILE, index=False)
     except Exception as e:
-        # parquet 의존성 (pyarrow/fastparquet) 없으면 csv 로 폴백
         try:
             df.to_csv(CACHE_FILE.with_suffix('.csv'), index=False)
         except Exception:
             print(f"⚠️ 캐시 저장 실패: {e}")
 
-def _load_cache() -> pd.DataFrame:
+def _load_cache() -> tuple:
     """캐시 로드. 성공 시 (df, age_hours), 실패 시 (None, None)."""
     for path in (CACHE_FILE, CACHE_FILE.with_suffix('.csv')):
         if not path.exists():
@@ -411,8 +403,8 @@ def _load_cache() -> pd.DataFrame:
             print(f"⚠️ 캐시 로드 실패 ({path.name}): {e}")
     return None, None
 
-def fetch_yf_with_retry(tickers: list[str], start: str, end: str,
-                       max_retries: int = 4) -> tuple[pd.DataFrame, str]:
+def fetch_yf_with_retry(tickers: list, start: str, end: str,
+                       max_retries: int = 4) -> tuple:
     """yfinance 다운로드 + 지수 백오프 재시도 + 빈 응답 / rate limit 진단.
     Returns: (df, status_msg).  df 가 None 이면 status_msg 에 사유."""
     last_err = None
@@ -446,13 +438,12 @@ def fetch_yf_with_retry(tickers: list[str], start: str, end: str,
     return None, f"⚠️ {max_retries}회 모두 실패. 마지막 에러: {last_err} (last_rows={last_rows})"
 
 
-def fetch_live_price_safe(ticker: str) -> float | None:
+def fetch_live_price_safe(ticker: str):
     """fast_info live price + 폴백 — 실패 시 None."""
     try:
         return float(yf.Ticker(ticker).fast_info['last_price'])
     except Exception as e:
         print(f"⚠️ {ticker} live price fetch 실패: {e}")
-        # 폴백 1: 1일치 download
         try:
             d = yf.download(ticker, period='5d', interval='1d',
                             auto_adjust=True, progress=False, threads=False)
@@ -468,7 +459,7 @@ def fetch_live_price_safe(ticker: str) -> float | None:
 # 5. 메인
 # ─────────────────────────────────────────────────────────────
 def main():
-    print("🚀 [위대리] 오토봇 v4.8 가동 시작...")
+    print("🚀 [위대리] 오토봇 v5.1 가동 시작...")
     if USE_V48:
         print(f"   v4.8 ON: dec×{DEC_SELL_SCALE}, HIGH 멜트업({MA_WINDOW_WEEKS}주MA×{TREND_THRESHOLD})×{SELL_RATE_MULT}")
     else:
@@ -488,7 +479,6 @@ def main():
         creds_dict = json.loads(creds_raw)
         if 'private_key' in creds_dict:
             creds_dict['private_key'] = creds_dict['private_key'].replace('\\n', '\n')
-        # creds_dict 구조 점검 — 자주 빠지는 필드 미리 잡기
         required_keys = ['type', 'client_email', 'private_key', 'token_uri']
         missing = [k for k in required_keys if not creds_dict.get(k)]
         if missing:
@@ -507,7 +497,6 @@ def main():
         err_repr = repr(e)
         err_type = type(e).__name__
         tb = traceback.format_exc()
-        # 자주 발생하는 케이스별 친절한 진단 메시지
         haystack = (err_str + ' ' + err_repr + ' ' + tb).lower()
         if 'account not found' in haystack:
             diagnosis = ("서비스 계정이 GCP 에 존재하지 않습니다. "
@@ -520,8 +509,7 @@ def main():
         elif 'invalid_grant' in haystack:
             diagnosis = ("자격증명 무효. 키가 회전됐거나 계정이 삭제됐습니다. 새 JSON 키 필요.")
         elif 'permission' in haystack or '403' in haystack:
-            diagnosis = (f"권한 부족. 서비스 계정 ({client_email_short if 'client_email_short' in dir() else '?'}) 을 "
-                         f"시트 공유 대상에 *편집자* 로 추가했는지 확인하세요.")
+            diagnosis = (f"권한 부족. 서비스 계정 을 시트 공유 대상에 *편집자* 로 추가했는지 확인하세요.")
         elif 'not found' in haystack and ('404' in haystack or 'sheet' in haystack):
             diagnosis = (f"시트({SHEET_KEY[:20]}...) 또는 '위대리' 워크시트가 없거나 접근 불가.")
         elif 'jsondecode' in haystack:
@@ -569,7 +557,6 @@ def main():
         df, fetch_msg = fetch_yf_with_retry(["QQQ", "TQQQ"], "2010-01-01", end_dt)
         print(fetch_msg)
         if df is None or df.empty or 'TQQQ' not in df.columns or 'QQQ' not in df.columns:
-            # 캐시 폴백 시도
             cached_df, cached_age_h = _load_cache()
             if cached_df is not None and not cached_df.empty:
                 if cached_age_h <= 168:   # 7일 이내 캐시
@@ -592,7 +579,6 @@ def main():
                        f"② Yahoo Finance API 일시 다운 ③ `pip install -U yfinance` 필요")
                 print(err); send_telegram(err); return
         else:
-            # 정상 fetch 성공 → 캐시 갱신
             _save_cache(df)
         if len(df) < 260:
             err = (f"❌ [위대리 봇] 데이터 부족: {len(df)}행 (5년치 미만). OLS 회귀 불가능.")
@@ -602,20 +588,14 @@ def main():
         live_tqqq = fetch_live_price_safe("TQQQ")
         live_qqq  = fetch_live_price_safe("QQQ")
         if live_tqqq is None or live_qqq is None:
-            # 라이브 가격 실패 시 df 의 마지막 종가 사용
             live_tqqq = live_tqqq or float(df['TQQQ'].iloc[-1])
             live_qqq  = live_qqq  or float(df['QQQ'].iloc[-1])
             print(f"⚠️ 라이브 가격 fetch 실패 — df 마지막 종가 사용 "
                   f"(TQQQ=${live_tqqq:.2f}, QQQ=${live_qqq:.2f})")
 
         if mode in ('pre_open', 'test'):
-            # pre-market & test: df 의 가장 최근 종가를 그대로 사용
-            #   - pre_open: 어제(목요일) 종가
-            #   - test: 가장 최근 거래일의 종가 (장 마감 후라면 직전 영업일)
             cur_p = round(float(df['TQQQ'].iloc[-1]), 2)
         else:  # near_close 또는 post_close — 둘 다 오늘 가격을 사용
-            # near_close: live_tqqq 는 장중 실시간 가격 (마감가에 매우 근접)
-            # post_close: live_tqqq 는 정식 마감가
             live_date = pd.to_datetime(datetime.now().strftime('%Y-%m-%d'))
             if live_date > df['Date'].iloc[-1]:
                 df = pd.concat([df, pd.DataFrame({
@@ -635,7 +615,6 @@ def main():
         growth = compute_expanding_ols(qqq_weekly, W=260)
         qqq_weekly['Growth'] = growth
         qqq_weekly['Eval']   = qqq_weekly['QQQ'] / qqq_weekly['Growth'] - 1
-        # v4.8: QQQ 13주 이동평균 (Task B 모멘텀 필터용)
         if MA_WINDOW_WEEKS > 0:
             qqq_weekly['QQQ_MA'] = qqq_weekly['QQQ'].rolling(
                 MA_WINDOW_WEEKS, min_periods=1).mean()
@@ -662,10 +641,8 @@ def main():
         buy_r  = {'HIGH': params['bH'], 'MID': params['bM'], 'LOW': params['bL']}
 
         # 양도세 납부 시점을 sim 의 weekly bar 와 매핑
-        # 각 weekly bar 에서 그 직전~현재 사이에 결제일이 있으면 그 weekly bar 직전에 cash 차감
-        tax_to_apply = list(tax_payments)   # 사본 (소비됨)
+        tax_to_apply = list(tax_payments)
         cum_paid_tax = 0.0
-        # 사용자 편의: 가장 최근 sim bar 까지 납부된 누적 금액도 별도 추적
 
         # H. 과거 매매 복기 (시작일+1 ~ 마지막 주 직전)
         for i in range(1, len(sim) - 1):
@@ -675,20 +652,8 @@ def main():
             tier = get_tier(ev, hc, lc)
             diff = shares * (p - prev_p)
 
-            # 양도세 납부 적용: 직전 bar < 납부일 <= 현재 bar 인 결제 차감
-            still_pending = []
-            for pay in tax_to_apply:
-                pay_date = pd.Timestamp(pay['date'])
-                if prev_bar_date < pay_date <= bar_date:
-                    cash -= pay['amount_usd']
-                    cum_paid_tax += pay['amount_usd']
-                    # cash 가 음수가 되어도 표시 (강제 매도 안 함 — 실제로는 사용자가 외부에서 충당)
-                else:
-                    still_pending.append(pay)
-            tax_to_apply = still_pending
-
+            # 매매 (v4.8 sell rate 조정 포함)
             if diff > 0 and shares > 0:
-                # v4.8: sell rate 동적 조정 (Task A + Task B)
                 sr_eff, _ = adjust_sell_rate_v48(
                     sell_r[tier], tier,
                     sim.loc[i, 'Date'],
@@ -698,9 +663,19 @@ def main():
                 qty = int(min(round(diff * sr_eff / p), shares))
                 shares -= qty; cash += qty * p
             elif diff < 0:
-                # cash 가 음수이거나 부족하면 매수 안 함
                 qty = int(min(max(cash, 0), abs(diff) * buy_r[tier]) / p) if cash > 0 else 0
                 shares += qty; cash -= qty * p
+
+            # 양도세 납부 적용: 직전 bar < 납부일 <= 현재 bar 인 결제 차감
+            still_pending = []
+            for pay in tax_to_apply:
+                pay_date = pd.Timestamp(pay['date'])
+                if prev_bar_date < pay_date <= bar_date:
+                    cash -= pay['amount_usd']
+                    cum_paid_tax += pay['amount_usd']
+                else:
+                    still_pending.append(pay)
+            tax_to_apply = still_pending
 
         # 마지막 bar 이전~현재 사이의 잔여 납부 분도 적용
         if tax_to_apply:
@@ -734,11 +709,11 @@ def main():
             order_qty = int(min(round(diff_now * sr_eff_now / last_price), shares))
         elif diff_now < 0:
             action    = "매수"
-            order_qty = int(min(cash, abs(diff_now) * buy_r[this_tier]) / last_price)
+            order_qty = int(min(max(cash, 0), abs(diff_now) * buy_r[this_tier]) / last_price)
         if order_qty == 0:
             action = "관망"
 
-        # J. 자산
+        # J. 자산 (주문 체결 후 예상)
         if action == "매도":
             est_shares, est_cash = shares - order_qty, cash + order_qty * cur_p
         elif action == "매수":
@@ -747,7 +722,6 @@ def main():
             est_shares, est_cash = shares, cash
 
         total_asset = est_cash + est_shares * cur_p
-        # ✅ Sheets 의 initial_cap 사용 (v4.1 버그 수정)
         pnl_pct  = (total_asset / initial_cap - 1) * 100
         cash_pct = est_cash / total_asset * 100 if total_asset > 0 else 0
         recon_msg = reconcile(est_shares, est_cash, actual_balance, initial_cap)
@@ -780,8 +754,7 @@ def main():
         if cum_paid_tax > 0:
             tax_line = (f"  📌 누적 양도세 차감 : `−${cum_paid_tax:>10,.2f}` "
                         f"({len(tax_payments)}건 반영)\n")
-
-        title_prefix = "🧪 *[위대리 v4.8 — 테스트]*" if is_test_mode else "🚀 *[위대리 v4.8] 주간 시그널*"
+        title_prefix = "🧪 *[위대리 v5.1 — 테스트]*" if is_test_mode else "🚀 *[위대리 v5.1] 주간 시그널*"
         msg = (
             f"{title_prefix} ({today_str})\n"
             f"📡 모드: {mode_label}\n\n"
@@ -832,7 +805,6 @@ def main():
         tb = traceback.format_exc()
         err_str  = str(e) or "(빈 메시지)"
         err_type = type(e).__name__
-        # traceback 마지막 5줄에서 파일·라인 추출 (어느 위치에서 났는지)
         tb_lines = tb.strip().split('\n')
         recent_frames = '\n'.join(tb_lines[-6:])
 
