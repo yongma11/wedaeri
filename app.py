@@ -1,16 +1,17 @@
-# wedaeri_app.py — TQQQ 위대리 v5.0
+# wedaeri_app.py — TQQQ 위대리 v5.1
 # Tab1: 실전 트레이딩 | Tab2: 백테스트 분석 | Tab3: 전략 로직
 #
-# v5.0 변경사항 (SGOV 파킹 — 매매 로직 무수정):
-#   • 유휴 현금을 SGOV(초단기국채 ETF)에 파킹, 매수 버퍼만 현금으로 유지
-#     - 버퍼 = 주식가치 x 40% x 매수배율(티어)  [역사상 최악 주간 -37.5% 커버]
-#     - 파킹 목표 = max(0, 현금 - 버퍼), 매주 금요일 1회 리밸런스
-#     - 총자산 0.5% 미만 차액 주문은 생략 (잔주문 방지)
-#   • Tab1 주문표에 SGOV 매수/매도 카드 추가 (TQQQ 주문과 같은 세션 실행)
-#   • Tab2 백테스트에 파킹 토글 (^IRX 13주 T-bill 주간 금리 사용)
-#   • 검증: 2017-2026 CAGR +1.4%p (35.15 -> 36.52), MDD 무변화,
-#     매수 예산부족 0회 (COVID -37.5% 주 포함). OOS 2020-2026 Calmar 1.16 -> 1.22
-#   • 주의: SGOV 분배금은 양도세가 아닌 배당소득(15.4% 원천) — 회계 분리
+# v5.1 변경사항 (봇 엔진 동기화 — 주문 수량 불일치 해결):
+#   • SGOV 파킹 로직 전면 제거 (v5.0 롤백) — RP 자동투자로 대체, 복잡도 감소
+#   • [핵심 수정] 주간 패널을 봇(wedaeri_bot.py)과 동일하게 구성:
+#     ① 금요일 휴장 주 포함 — 기존에는 Eval 을 일별 df 에 머지 후 리샘플해서
+#        금요일 휴장 주(성금요일/준틴스/7.4 등)의 Eval 이 NaN → dropna 로
+#        그 주 전체가 조용히 삭제되어 봇과 매매 체인이 어긋났음.
+#        이제 주간 QQQ 에서 OLS/Eval 을 직접 계산 (봇 compute_expanding_ols 동일)
+#     ② QQQ 13주 MA 를 *전체 히스토리* 기준으로 계산 — 기존에는 시작일 이후
+#        데이터로만 계산해 첫 13주의 멜트업 필터 판정이 봇과 달랐음
+#     ③ 초기 현금 = 원금 - 주식매수액 (봇과 동일; 정수 주수 잔액을 현금에 보존)
+#   • 검증: 2025-12-26 시작 실계좌 구간에서 봇과 주문 4건 불일치 → 0건 일치
 #
 # v4.9 변경사항 (분석용 로그 강화):
 #   • 백테스트 매매 로그를 "완전 주간 패널"로 재설계 — 매주 1행(관망 포함)
@@ -53,22 +54,6 @@ DEFAULT_CONFIG = {
     'bH':  1.0,   'bM':  0.6,   'bL': 2.0,
     'tax_apply_to_bot': False,   # 봇 가상 잔고에 양도세 차감 반영 여부 (기본 OFF)
 }
-# ─────────────────────────────────────────────────────────────
-# v5.0: SGOV 파킹 설정
-#   버퍼 = 주식가치 x PARK_DROP_ASSUMPTION x 매수배율(티어)
-#   -> 다음주 TQQQ가 -40% 폭락해도 매수 예산이 현금으로 남아있도록 설계.
-#      (TQQQ 역사상 최악 주간 -37.5%, 2020 COVID. 2017-2026 예산부족 0회 검증)
-# ─────────────────────────────────────────────────────────────
-PARK_DROP_ASSUMPTION = 0.40
-PARK_BR = {'HIGH': 1.0, 'MID': 0.6, 'LOW': 2.0}   # 매매 로직의 매수배율과 동일값
-PARK_MIN_ORDER_PCT = 0.005                        # 총자산 대비 이 비율 미만 주문 생략
-
-def park_target_and_buffer(cash, shares, price, tier):
-    """이번 주 SGOV 파킹 목표금액과 남겨둘 현금 버퍼를 계산."""
-    buffer = shares * price * PARK_DROP_ASSUMPTION * PARK_BR.get(tier, 2.0)
-    target = max(0.0, cash - buffer)
-    return target, buffer
-
 def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
@@ -238,7 +223,7 @@ def delete_tax_payment(date_str: str) -> tuple:
 # ─────────────────────────────────────────────────────────────
 # 1. 페이지 설정 & 스타일
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="위대리 Quantum T-Flow v5.0", layout="wide")
+st.set_page_config(page_title="위대리 Quantum T-Flow v5.1", layout="wide")
 st.markdown("""
 <style>
 [data-testid="stSidebar"] { background-color: #f8f9fa; border-right: 1px solid #dee2e6; }
@@ -248,8 +233,6 @@ st.markdown("""
                    border-radius: 12px; text-align: center; }
 .order-card-sell { background-color: #f1f3f4; border: 1px solid #dadce0; padding: 25px;
                    border-radius: 12px; text-align: center; color: #5f6368; }
-.order-card-park { background-color: #e8f0fe; border: 1px solid #d2e3fc; padding: 18px;
-                   border-radius: 12px; margin-top: 10px; }
 .tier-high { background-color: #fff3cd; border-left: 4px solid #ffc107;
              padding: 12px 16px; border-radius: 6px; margin: 6px 0; }
 .tier-mid  { background-color: #d1ecf1; border-left: 4px solid #17a2b8;
@@ -383,17 +366,6 @@ with st.sidebar:
                             value=0.70, step=0.05, key='p_mult',
                             disabled=not v48_enable,
                             help="멜트업 시 HIGH 매도 배율에 곱함. OOS 최적값 0.70")
-    # ── v5.0: SGOV 파킹 토글 ──
-    with st.expander("v5.0 SGOV 파킹", expanded=False):
-        park_enable = st.checkbox(
-            "SGOV 파킹 적용", value=True, key='p_park_enable',
-            help="유휴 현금을 SGOV에 파킹. 버퍼(주식가치 x 40% x 티어 매수배율)만 현금 유지. "
-                 "검증: 2017-2026 CAGR +1.4%p, MDD 무변화, 예산부족 0회"
-        )
-        st.caption(
-            "매매 로직은 무수정 — 현금의 보관 위치만 바꿉니다. "
-            "SGOV 분배금은 배당소득(15.4% 원천, 양도세와 별도)."
-        )
 
     st.markdown(f"""
 **현재 적용 파라미터**
@@ -462,22 +434,58 @@ def load_wedaeri_data():
         st.error(f"데이터 로드 실패: {e}")
         return pd.DataFrame()
 # ─────────────────────────────────────────────────────────────
-# 3-a. v5.0: T-bill 금리 로더 (^IRX -> SGOV 수익률 근사)
+# 3-a. v5.1: 주간 패널 빌더 (봇 wedaeri_bot.py 와 동일 로직)
+#   - 일별 QQQ/TQQQ 를 W-FRI 로 직접 리샘플 -> 금요일 휴장 주도 포함
+#   - Growth/Eval 을 주간 QQQ 에서 재계산 (봇 compute_expanding_ols 동일)
+#   - QQQ_MA 를 전체 히스토리 기준으로 계산 후 시작일 필터
 # ─────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_tbill_weekly():
-    """^IRX (13주 T-bill 할인수익률, %) -> W-FRI 주간 연환산 소수 시리즈.
-    SGOV 수익률의 근사치. 실패 시 None (파킹 이자 0으로 처리)."""
-    try:
-        raw = yf.download("^IRX", start="2010-01-01",
-                          auto_adjust=False, progress=False)
-        s = raw['Close']
-        if isinstance(s, pd.DataFrame):
-            s = s.iloc[:, 0]
-        wkly = (s.resample('W-FRI').last().ffill() / 100.0)
-        return wkly
-    except Exception:
-        return None
+def compute_expanding_ols(qqq_weekly: pd.DataFrame, W: int = 260) -> np.ndarray:
+    """주간 QQQ 시계열로 5년(260주) Expanding Window log-선형 회귀.
+    봇(wedaeri_bot.py)의 compute_expanding_ols 와 완전 동일."""
+    n = len(qqq_weekly)
+    t = np.arange(1, n + 1, dtype=float)
+    y = np.log(qqq_weekly['QQQ'].values.astype(float))
+    ps_t  = np.zeros(n + 1); ps_t[1:]  = np.cumsum(t)
+    ps_y  = np.zeros(n + 1); ps_y[1:]  = np.cumsum(y)
+    ps_t2 = np.zeros(n + 1); ps_t2[1:] = np.cumsum(t ** 2)
+    ps_ty = np.zeros(n + 1); ps_ty[1:] = np.cumsum(t * y)
+    growth = np.empty(n)
+    for i in range(n):
+        w     = min(i + 1, W)
+        end   = i + 1
+        start = end - w
+        if w == 1:
+            growth[i] = float(qqq_weekly['QQQ'].iloc[i]); continue
+        s_t  = ps_t[end]  - ps_t[start]
+        s_y  = ps_y[end]  - ps_y[start]
+        s_t2 = ps_t2[end] - ps_t2[start]
+        s_ty = ps_ty[end] - ps_ty[start]
+        denom = w * s_t2 - s_t ** 2
+        if denom == 0:
+            growth[i] = float(qqq_weekly['QQQ'].iloc[i]); continue
+        b = (w * s_ty - s_t * s_y) / denom
+        a = (s_y - b * s_t) / w
+        growth[i] = np.exp(a + b * t[i])
+    return growth
+
+
+def build_weekly_panel(data: pd.DataFrame, ma_window_weeks: int = 13) -> pd.DataFrame:
+    """봇과 동일한 주간 패널 생성: Date/QQQ/TQQQ/Growth/Eval/QQQ_MA.
+    - 금요일 휴장 주 포함 (W-FRI 라벨, 목요일 종가로 마감)
+    - Eval 은 주간 QQQ 에서 직접 재계산 (일별 머지 경유 X — 휴장 주 누락 방지)
+    - QQQ_MA 는 전체 히스토리 기준 (시작일 필터는 호출 측에서)
+    """
+    d = data.set_index('Date')
+    qqq_weekly  = d[['QQQ']].resample('W-FRI').last().dropna().reset_index()
+    tqqq_weekly = d[['TQQQ']].resample('W-FRI').last().dropna().reset_index()
+    qqq_weekly['Growth'] = compute_expanding_ols(qqq_weekly, W=260)
+    qqq_weekly['Eval']   = qqq_weekly['QQQ'] / qqq_weekly['Growth'] - 1
+    if ma_window_weeks > 0:
+        qqq_weekly['QQQ_MA'] = qqq_weekly['QQQ'].rolling(
+            ma_window_weeks, min_periods=1).mean()
+    else:
+        qqq_weekly['QQQ_MA'] = qqq_weekly['QQQ']
+    return qqq_weekly.merge(tqqq_weekly, on='Date', how='inner')
 # ─────────────────────────────────────────────────────────────
 # 3-b. 실시간 종가 주입
 # ─────────────────────────────────────────────────────────────
@@ -512,7 +520,7 @@ def inject_live_price(df: pd.DataFrame) -> pd.DataFrame:
         pass
     return df
 # ─────────────────────────────────────────────────────────────
-# 4. 실전 시뮬레이션 (Tab 1) — v5.0: SGOV 파킹 추적 추가
+# 4. 실전 시뮬레이션 (Tab 1) — v5.1: 봇 동일 패널/초기현금
 # ─────────────────────────────────────────────────────────────
 def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                     hc=0.06, lc=-0.06,
@@ -522,30 +530,18 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                     dec_sell_scale=0.75,
                     ma_window_weeks=13,
                     trend_threshold=1.08,
-                    sell_rate_multiplier=0.70,
-                    # ── v5.0: SGOV 파킹 ──
-                    apply_parking=True,
-                    tbill_weekly=None):
-    sim  = data[data['Date'] >= pd.to_datetime(start_dt)].copy()
-    wkly = (sim.set_index('Date')[['TQQQ', 'QQQ', 'Eval']]
-               .resample('W-FRI').last()
-               .dropna()
-               .reset_index())
+                    sell_rate_multiplier=0.70):
+    # v5.1: 봇과 동일한 주간 패널 (휴장 금요일 포함, MA 전체 히스토리)
+    panel = build_weekly_panel(data, ma_window_weeks=ma_window_weeks)
+    wkly = (panel[panel['Date'] >= pd.to_datetime(start_dt)]
+            .dropna(subset=['Eval', 'TQQQ'])
+            .reset_index(drop=True))
     if wkly.empty or len(wkly) < 2:
         return pd.DataFrame()
-    if ma_window_weeks > 0:
-        wkly['QQQ_MA'] = wkly['QQQ'].rolling(ma_window_weeks, min_periods=1).mean()
-    else:
-        wkly['QQQ_MA'] = wkly['QQQ']
-    # v5.0: 주간 T-bill 금리 매핑 (없으면 0)
-    if apply_parking and tbill_weekly is not None:
-        rates = tbill_weekly.reindex(pd.to_datetime(wkly['Date'])).ffill().fillna(0.0).values
-    else:
-        rates = np.zeros(len(wkly))
-    cash   = init_cap * cash_ratio
-    shares = int((init_cap * (1 - cash_ratio)) / wkly['TQQQ'].iloc[0])
-    parked = 0.0            # v5.0: SGOV 잔고 (시뮬 내부 추적, cash 의 부분집합)
-    cum_interest = 0.0
+    # v5.1: 초기 현금 = 원금 - 주식매수액 (봇과 동일 — 정수 주수 잔액 보존)
+    init_price = float(wkly.loc[0, 'TQQQ'])
+    shares = int((init_cap * (1 - cash_ratio)) / init_price)
+    cash   = init_cap - shares * init_price
     logs   = []
     for i in range(len(wkly)):
         p    = float(wkly.loc[i, 'TQQQ'])
@@ -553,11 +549,6 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
         tier = 'HIGH' if ev >= hc else ('LOW' if ev <= lc else 'MID')
         sr   = {'HIGH': sH, 'MID': sM, 'LOW': sL}[tier]
         br   = {'HIGH': bH, 'MID': bM, 'LOW': bL}[tier]
-        # v5.0: 지난주 파킹분 이자 (주초 반영)
-        if apply_parking and i > 0 and parked > 0:
-            interest = parked * float(rates[i]) / 52.0
-            cash += interest
-            cum_interest += interest
         # v4.8 — HIGH-tier 모멘텀 필터: 진짜 멜트업에서만 매도 축소
         if tier == 'HIGH' and ma_window_weeks > 0:
             qqq_ma  = float(wkly.loc[i, 'QQQ_MA'])
@@ -582,16 +573,6 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                     action, disp_qty = "매수", qty
                     shares += qty; cash -= qty * p
         total = cash + shares * p
-        # v5.0: 이번 주 파킹 목표 재계산 -> SGOV 주문 산출
-        if apply_parking:
-            target, buffer = park_target_and_buffer(cash, shares, p, tier)
-            sgov_order = target - parked
-            if abs(sgov_order) < total * PARK_MIN_ORDER_PCT:
-                sgov_order = 0.0
-            parked += sgov_order
-            parked = min(parked, max(cash, 0.0))
-        else:
-            target, buffer, sgov_order = 0.0, 0.0, 0.0
         logs.append({
             '날짜':     wkly.loc[i, 'Date'].strftime('%Y-%m-%d'),
             '시장평가': f"{ev:.2%}",
@@ -602,11 +583,6 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
             '현금':     round(cash, 2),
             '총자산':   round(total, 2),
             '수익률':   f"{(total/init_cap - 1)*100:.2f}%",
-            # ── v5.0 파킹 컬럼 ──
-            'SGOV파킹': round(parked, 2),
-            '현금버퍼': round(cash - parked, 2),
-            'SGOV주문': round(sgov_order, 2),
-            '누적이자': round(cum_interest, 2),
         })
     return pd.DataFrame(logs)
 # ─────────────────────────────────────────────────────────────
@@ -634,30 +610,18 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                       dec_sell_scale=0.75,
                       ma_window_weeks=13,
                       trend_threshold=1.08,
-                      sell_rate_multiplier=0.70,
-                      # ── v5.0: SGOV 파킹 ──
-                      apply_parking=False,
-                      tbill_weekly=None):
-    """위대리 전략 백테스트 (수수료 + 양도세 + SGOV 파킹 옵션 포함).
+                      sell_rate_multiplier=0.70):
+    """위대리 전략 백테스트 (수수료 + 양도세 옵션 포함).
 
-    v5.0 apply_parking=True 시:
-      버퍼 = 주식가치 x 40% x 매수배율(티어) 를 현금으로 남기고
-      나머지를 SGOV 로 간주해 ^IRX 주간 금리로 이자 지급 (매매 로직 무수정).
-      trade_log 에 parked / park_interest / park_buffer 컬럼 추가.
+    v5.1: 주간 패널을 봇과 동일하게 구성 (build_weekly_panel) —
+      금요일 휴장 주 포함 + Eval 주간 재계산 + QQQ_MA 전체 히스토리.
     """
-    _cols = ['TQQQ', 'QQQ', 'Eval'] + (['Growth'] if 'Growth' in data.columns else [])
-    wkly = (data.set_index('Date')[_cols]
-                .resample('W-FRI').last()
-                .dropna()
-                .reset_index())
+    # v5.1: 봇과 동일한 주간 패널 (휴장 금요일 포함, Eval 재계산, MA 전체 히스토리)
+    wkly = build_weekly_panel(data, ma_window_weeks=ma_window_weeks)
     if start_date is not None:
         wkly = wkly[wkly['Date'] >= pd.to_datetime(start_date)].reset_index(drop=True)
     if len(wkly) < 2:
         return None
-    if ma_window_weeks > 0:
-        wkly['QQQ_MA'] = wkly['QQQ'].rolling(ma_window_weeks, min_periods=1).mean()
-    else:
-        wkly['QQQ_MA'] = wkly['QQQ']
     P       = wkly['TQQQ'].values.astype(float)
     EV      = wkly['Eval'].values.astype(float)
     QQQ_arr = wkly['QQQ'].values.astype(float)
@@ -670,14 +634,6 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
     N     = len(wkly)
     span_days = (pd.to_datetime(dates[-1]) - pd.to_datetime(dates[0])).days
     YEARS = max(span_days / 365.25, N / 52)
-
-    # v5.0: 주간 T-bill 금리 배열
-    if apply_parking and tbill_weekly is not None:
-        park_rates = tbill_weekly.reindex(pd.to_datetime(wkly['Date'])).ffill().fillna(0.0).values
-    else:
-        park_rates = np.zeros(N)
-    parked       = 0.0
-    cum_interest = 0.0
 
     # 초기 포지션 — 첫 매수에도 수수료 적용 (현실 반영)
     cash   = float(init_cap * cash_ratio)
@@ -747,13 +703,6 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
         tier = 'HIGH' if ev >= hc else ('LOW' if ev <= lc else 'MID')
         tiers.append(tier)
 
-        # ── v5.0: 지난주 파킹분 이자 (주초, 매매 이전 반영) ──
-        park_interest_this = 0.0
-        if apply_parking and i > 0 and parked > 0:
-            park_interest_this = parked * float(park_rates[i]) / 52.0
-            cash += park_interest_this
-            cum_interest += park_interest_this
-
         # ── 이번 주 신호/체결 계산 ──
         action_label      = "관망"
         qty_signed        = 0
@@ -802,17 +751,6 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                         action_label = "매수"
                         qty_signed = qty_actual
 
-        # ── v5.0: 이번 주 파킹 목표 재계산 (완전 패널 기록 직전) ──
-        if apply_parking:
-            _park_tgt, _park_buf = park_target_and_buffer(cash, shares, p, tier)
-            _park_ord = _park_tgt - parked
-            if abs(_park_ord) < (cash + shares * p) * PARK_MIN_ORDER_PCT:
-                _park_ord = 0.0
-            parked += _park_ord
-            parked = min(parked, max(cash, 0.0))
-        else:
-            _park_buf = 0.0
-
         # ── 매주 1행 완전 패널 기록 (관망 포함, raw 숫자) ──
         avg_cost    = (total_cost_basis / shares) if shares > 0 else 0.0
         total_asset = cash + shares * p
@@ -851,10 +789,6 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
             'total_asset':  float(total_asset),
             'cum_return':   float(total_asset / init_cap - 1.0),
             'note':         '',
-            # ── v5.0 파킹 컬럼 ──
-            'parked':        float(parked),
-            'park_interest': float(cum_interest),
-            'park_buffer':   float(_park_buf),
         })
 
         # ── 양도세: 새 해 첫 weekly close 시점에 직전 연도 세액 계산 ──
@@ -898,9 +832,6 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                 paid = min(cash, amount)
                 cash = max(0.0, cash - amount)
                 cum_tax += paid
-                # v5.0: 세금 인출로 버퍼가 소진되면 파킹에서 자동 인출 처리
-                if apply_parking:
-                    parked = min(parked, max(cash, 0.0))
                 trade_log.append({
                     'date':         date_t.strftime('%Y-%m-%d'),
                     'week':         int(i),
@@ -932,9 +863,6 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                     'total_asset':  float(cash + shares * p),
                     'cum_return':   float((cash + shares * p) / init_cap - 1.0),
                     'note':         f"{pay['prev_year']}년 분 ({tax_strategy})",
-                    'parked':        float(parked),
-                    'park_interest': float(cum_interest),
-                    'park_buffer':   float(_park_buf) if apply_parking else 0.0,
                 })
                 tax_events.append({
                     'date':       date_t.strftime('%Y-%m-%d'),
@@ -1019,9 +947,6 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
         'tax_strategy':   tax_strategy,
         'unpaid_tax':     sum(p['amount'] for p in pending_payments),
         'trade_log':      trade_log,
-        # ── v5.0 ──
-        'cum_interest':   cum_interest,
-        'apply_parking':  apply_parking,
     }
 # ─────────────────────────────────────────────────────────────
 # 메인 실행
@@ -1035,9 +960,6 @@ if df.empty:
 _ss = st.session_state
 # v4.8: 토글 상태에 따라 v4.8 신호를 활성/no-op 으로 패스
 _v48_on = _ss.get('p_v48_enable', True)
-# v5.0: 파킹 토글
-_park_on = _ss.get('p_park_enable', True)
-_tbill_wk = load_tbill_weekly() if _park_on else None
 log_df = run_wedaeri_sim(
     df, st_start, st_cap, st_cash_ratio,
     hc  = _ss.get('p_hc', DEFAULT_CONFIG['hc']) / 100,
@@ -1052,8 +974,6 @@ log_df = run_wedaeri_sim(
     ma_window_weeks      = _ss.get('p_ma_w', 13)       if _v48_on else 0,
     trend_threshold      = _ss.get('p_thr', 1.08)      if _v48_on else 99.0,
     sell_rate_multiplier = _ss.get('p_mult', 0.70)     if _v48_on else 1.0,
-    apply_parking        = _park_on,
-    tbill_weekly         = _tbill_wk,
 )
 tqqq_series = df['TQQQ'].dropna()
 latest_tqqq = float(tqqq_series.iloc[-1]) if not tqqq_series.empty else 0.0
@@ -1062,7 +982,7 @@ latest_eval  = float(eval_series.iloc[-1]) if not eval_series.empty else 0.0
 _hc_rt = _ss.get('p_hc', DEFAULT_CONFIG['hc']) / 100
 _lc_rt = _ss.get('p_lc', DEFAULT_CONFIG['lc']) / 100
 latest_tier  = 'HIGH' if latest_eval >= _hc_rt else ('LOW' if latest_eval <= _lc_rt else 'MID')
-st.title("TQQQ [위대리] v5.0 : 균형형 트레이딩 시스템")
+st.title("TQQQ [위대리] v5.1 : 균형형 트레이딩 시스템")
 tab1, tab2, tab3 = st.tabs(["실전 트레이딩", "백테스트 분석", "전략 로직"])
 # ═══════════════════════════════════════════════════════════════
 # TAB 1 — 실전 트레이딩
@@ -1091,36 +1011,6 @@ with tab1:
             f'<div class="order-card-sell"><h4>LOC 매도 주문</h4>'
             f'<h1>{val}</h1></div>',
             unsafe_allow_html=True)
-    # ── v5.0: SGOV 파킹 주문 카드 ─────────────────────
-    if _park_on and 'SGOV주문' in log_df.columns:
-        _pk = log_df.iloc[-1]
-        _sgov_order = float(_pk['SGOV주문'])
-        _sgov_bal   = float(_pk['SGOV파킹'])
-        _buf        = float(_pk['현금버퍼'])
-        _cum_int    = float(_pk['누적이자'])
-        _rate = 0.0
-        if _tbill_wk is not None and not _tbill_wk.dropna().empty:
-            _rate = float(_tbill_wk.dropna().iloc[-1])
-        _monthly = _sgov_bal * _rate / 12.0
-        if _sgov_order > 0:
-            _pk_msg = f"SGOV 매수 ${_sgov_order:,.0f} (파킹)"
-        elif _sgov_order < 0:
-            _pk_msg = f"SGOV 매도 ${abs(_sgov_order):,.0f} (인출 -> 매수 버퍼 보충)"
-        else:
-            _pk_msg = "SGOV 주문 없음 (목표 잔고 유지)"
-        st.markdown(
-            f'<div class="order-card-park">'
-            f'<b>SGOV 파킹 주문 — TQQQ 주문과 같은 세션에 실행</b><br>'
-            f'<h3 style="margin:6px 0;">{_pk_msg}</h3>'
-            f'목표 파킹 잔고 <b>${_sgov_bal:,.0f}</b> | 현금 버퍼(미파킹) <b>${_buf:,.0f}</b> | '
-            f'현재 T-bill {_rate*100:.2f}% 기준 예상 이자 <b>~${_monthly:,.0f}/월</b> | '
-            f'누적 이자(시뮬) <b>${_cum_int:,.0f}</b>'
-            f'</div>', unsafe_allow_html=True)
-        st.caption(
-            "규칙: 버퍼 = 주식가치 x 40% x 매수배율(티어). 다음주 최악 하락(-40% 가정)의 매수 예산을 "
-            "현금으로 남기고 나머지 전부 SGOV. 주 1회 리밸런스, 총자산 0.5% 미만 차액은 주문 생략. "
-            "SGOV 분배금은 배당소득(양도세 아님) — 별도 회계."
-        )
     st.divider()
     # ── 양도세 납부 관리 ─────────────────────────
     _now = datetime.now()
@@ -1291,12 +1181,6 @@ with tab1:
               f"세전 {last['수익률']}" if _eff_paid_usd > 0 else None)
     a4.metric("평가 금액",  f"${last['보유수량'] * latest_tqqq:,.2f}")
     a5.metric("현금 비중",  f"{_adjusted_cash_pct:.2f}%")
-    # v5.0: 파킹 요약 라인
-    if _park_on and 'SGOV파킹' in log_df.columns:
-        st.caption(
-            f"현금 ${float(last['현금']):,.0f} 중 SGOV 파킹 ${float(last['SGOV파킹']):,.0f} + "
-            f"현금 버퍼 ${float(last['현금버퍼']):,.0f} | 파킹 누적 이자(시뮬) ${float(last['누적이자']):,.0f}"
-        )
     if _eff_paid_usd > 0:
         st.caption(
             f"누적 양도세 납부 ${_eff_paid_usd:,.2f} 가 현금에서 차감되어 표시됩니다 "
@@ -1341,12 +1225,6 @@ with tab2:
             help="시작 시점 현금 vs 주식 비중. 기본 45% (검증된 균형점). "
                  "낮출수록 초기 stock 노출 up -> 강세장 수익 up but 첫 약세장 MDD up"
         ) / 100
-        # ── v5.0: SGOV 파킹 토글 ──
-        apply_park_bt = st.checkbox(
-            "SGOV 파킹 적용 (유휴 현금을 T-bill 수익률로 운용)", value=True,
-            key='p_bt_parking',
-            help="버퍼(주식가치 x 40% x 티어 매수배율)를 제외한 현금을 SGOV에 파킹. "
-                 "^IRX 주간 금리 사용. 검증: 2017-2026 CAGR +1.4%p, MDD 무변화, 예산부족 0회")
         st.caption(
             f"전략 파라미터: 최적화 기본값 고정 "
             f"(hc=+-6%, 매도 H/M/L = 2.0/0.3/0.2, 매수 H/M/L = 1.0/0.6/2.0)"
@@ -1390,12 +1268,6 @@ with tab2:
         trend_threshold      = bt_thr      if v48_bt_on else 99.0,
         sell_rate_multiplier = bt_mult     if v48_bt_on else 1.0,
     )
-    # ── v5.0: 파킹 kwargs ──
-    park_kwargs = dict(
-        apply_parking = apply_park_bt,
-        tbill_weekly  = load_tbill_weekly() if apply_park_bt else None,
-    )
-
     # ── 거래비용 + 양도세 옵션 ─────────────────────────────────
     with st.expander("거래비용 & 양도세 (현실 시뮬레이션)", expanded=False):
         cc1, cc2 = st.columns(2)
@@ -1460,7 +1332,6 @@ with tab2:
             start_date=bt_start_date,
             **cost_kwargs,
             **v48_kwargs,
-            **park_kwargs,
         )
         bt_gross = None
         if compare_costs and (apply_comm or apply_tax):
@@ -1472,7 +1343,6 @@ with tab2:
                 start_date=bt_start_date,
                 apply_commission=False, apply_tax=False,
                 **v48_kwargs,
-                **park_kwargs,
             )
 
         bt_strategies = None
@@ -1488,7 +1358,6 @@ with tab2:
                     start_date=bt_start_date,
                     **kw,
                     **v48_kwargs,
-                    **park_kwargs,
                 )
     if bt_cur is None:
         st.warning("백테스트 데이터가 부족합니다.")
@@ -1519,17 +1388,8 @@ with tab2:
     st.caption(
         f"백테스트 기간: {dates[0].strftime('%Y.%m.%d')} ~ {dates[-1].strftime('%Y.%m.%d')}"
         f"  ({bt_cur['years']:.1f}년) | 초기 자본 ${bt_cap:,} | 초기 현금 {bt_cash_ratio:.0%} | "
-        f"수수료 {'ON' if apply_comm else 'OFF'} / 양도세 {'ON' if apply_tax else 'OFF'} / "
-        f"SGOV 파킹 {'ON' if apply_park_bt else 'OFF'}"
+        f"수수료 {'ON' if apply_comm else 'OFF'} / 양도세 {'ON' if apply_tax else 'OFF'}"
     )
-    # ── v5.0: 파킹 이자 요약 ──
-    if apply_park_bt and bt_cur.get('cum_interest', 0) > 0:
-        st.info(
-            f"SGOV 파킹 누적 이자: **${bt_cur['cum_interest']:,.0f}** "
-            f"(최종 자산의 {bt_cur['cum_interest']/max(bt_cur['final'],1)*100:.1f}%) — "
-            f"매매 로직 무수정, 유휴 현금 운용 수익. ^IRX 주간 금리 기준.",
-            icon="🏦"
-        )
     # ── 거래비용/세금 요약 + Gross vs Net 비교 ─────────────────
     if apply_comm or apply_tax:
         st.markdown("### 거래비용 & 양도세 요약")
@@ -1757,7 +1617,6 @@ with tab2:
             rp = float(r.get('realized_pnl', 0.0))
             cm = float(r.get('commission', 0.0))
             tx = float(r.get('tax_paid', 0.0))
-            pk = float(r.get('parked', 0.0))
             return {
                 'Date':      r['date'],
                 'Action':    emoji_map.get(r['action'], r['action']),
@@ -1774,7 +1633,6 @@ with tab2:
                 '평단가':     f"${r['avg_cost']:.2f}",
                 '보유수량':   f"{int(r['shares']):,}",
                 '현금':       f"${r['cash']:,.2f}",
-                'SGOV파킹':   f"${pk:,.0f}"             if pk > 0 else "",
                 '총자산':     f"${r['total_asset']:,.2f}",
                 '수익률':     f"{r['cum_return']*100:+.2f}%",
                 'DD':        f"{r.get('drawdown', 0.0)*100:.1f}%",
@@ -1846,14 +1704,11 @@ with tab2:
 | `tax_paid` | 이 이벤트의 양도세 납부액 (USD, TAX 행) |
 | `avg_cost` | 이벤트 후 가중평균 매입단가 |
 | `shares` | 이벤트 후 보유 수량 |
-| `cash` | 이벤트 후 현금 (파킹 포함) |
+| `cash` | 이벤트 후 현금 |
 | `stock_value` | shares x tqqq_close |
 | `total_asset` | cash + stock_value |
 | `cum_return` | total_asset / 초기자본 - 1 (소수) |
 | `peak` / `drawdown` | 로그 전체 기준 running peak 와 낙폭 (소수) |
-| `parked` | v5.0: 이벤트 후 SGOV 파킹 잔고 (cash 의 부분집합) |
-| `park_interest` | v5.0: 누적 파킹 이자 (USD) |
-| `park_buffer` | v5.0: 이번 주 현금 버퍼 = 주식가치 x 40% x 매수배율(티어) |
 | `note` | 비고 (양도세 대상연도 등) |
 
 **바로 써먹는 분석 예시 (pandas):**
@@ -1866,10 +1721,6 @@ df[df.action=="SELL"].groupby("tier")["realized_pnl"].describe()
 
 # 모멘텀 필터가 실제로 얼마나 자주 발동했나 + 그 주의 성과
 df[df.mom_filter==1][["date","tqqq_wk_ret","sell_qty"]]
-
-# v5.0: 파킹 이자가 연도별로 얼마나 쌓였나
-df["yr"] = df.date.dt.year
-df.groupby("yr")["park_interest"].last().diff()
 
 # 주간수익률로 CAGR/변동성 재계산해서 지표 재현 검증
 w = df.drop_duplicates("date").set_index("date")["total_asset"]
@@ -2011,12 +1862,6 @@ Eval   = (QQQ / Growth) - 1  # 추세 대비 괴리율
     -> LOC 매수 주문 실행 -> 주식 증가
 변동 없으면:
     -> 관망 (주문 없음)
-
-[v5.0] 매매 주문 처리 후, 같은 세션에서 SGOV 파킹 리밸런스:
-    버퍼        = 주식가치 x 40% x 매수배율[티어]
-    파킹 목표   = max(0, 현금 - 버퍼)
-    SGOV 주문   = 파킹 목표 - 현재 SGOV 잔고   # +매수 / -매도
-    (차액이 총자산 0.5% 미만이면 생략)
 """, language='python')
     col_up, col_dn = st.columns(2)
     with col_up:
@@ -2091,7 +1936,6 @@ Eval   = (QQQ / Growth) - 1  # 추세 대비 괴리율
 - 현금 = LOW 티어 발생 시 매수 탄약
 - LOW 티어 때 현금 소진 -> 기회 상실
 - 양도세 적용 시 매도-only 리밸런싱 권장
-- [v5.0] 유휴 현금은 SGOV 파킹 (버퍼 제외)
 """)
     with tip3:
         st.success("""
@@ -2149,37 +1993,22 @@ robust 한 개선입니다.
 - IS 와 OOS 가산이 거의 일치(+0.78 vs +0.75) -> robust 한 alpha
 - MDD 는 거의 변동 없음 (-30.45% vs -30.58%)
 
-### Step 7. v5.0 — SGOV 파킹 (매매 로직 무수정)
+### Step 7. v5.1 — 앱/봇 엔진 동기화
 
-위대리는 구조상 평균 현금 비중이 40~65%(HIGH 장기화 국면에는 90%+)로 높습니다.
-이 유휴 현금을 **SGOV(0-3개월 미국채 ETF)** 에 파킹해 T-bill 수익률을 확보합니다.
+앱과 오토봇(wedaeri_bot.py)의 주문 수량이 달랐던 원인 3가지를 수정해
+두 엔진이 **완전히 동일한 주문**을 내도록 통일했습니다 (봇 방식이 기준).
 
-**규칙 (매주 금요일, TQQQ 주문과 같은 세션에 SGOV 주문 1건):**
-```
-버퍼        = 주식가치 x 40% x 매수배율(티어)     # HIGH 1.0 / MID 0.6 / LOW 2.0
-파킹 목표   = max(0, 현금 - 버퍼)
-SGOV 주문   = 파킹 목표 - 현재 SGOV 잔고          # + 매수(파킹) / - 매도(인출)
-(차액이 총자산 0.5% 미만이면 주문 생략)
-```
-
-**설계 근거:**
-- 다음 주 매수 예산 상한 = 주식가치 x |주간하락률| x 매수배율.
-  TQQQ 역사상 최악 주간 -37.5% (2020 COVID) 를 40% 가정으로 커버.
-- 티어가 MID -> LOW 로 바뀌면(폭락 초입) 매수배율이 0.6 -> 2.0 이 되어
-  버퍼가 자동으로 커지고 SGOV 인출이 선행됨.
-- 2017-2026 백테스트: 매수 예산부족 **0회** (COVID 주 포함),
-  CAGR +1.4%p (35.15 -> 36.52), MDD 무변화, Calmar 1.18 -> 1.22.
-  OOS 2020-2026 에서도 Calmar 1.16 -> 1.22 로 개선.
-
-**주의사항:**
-- SGOV 분배금은 **양도세가 아닌 배당소득** (15.4% 원천징수, 연 금융소득 2천만원
-  초과 시 종합과세 대상) — 위대리 양도세 회계와 분리 관리. 정확한 처리는 세무사 확인.
-- 만에 하나 버퍼를 초과하는 매수 신호: 그 주는 가용현금만큼만 매수하거나,
-  금요일 장중 SGOV 선매도 (해외주식 매도대금 당일 재사용 가능 여부는 증권사 확인).
-- SGOV 는 듀레이션 ~0.1년의 사실상 현금 등가물 — 재기자본 금고와 같은 등급의 안전자산.
+1. **금요일 휴장 주 누락 (주범)** — 기존 앱은 Eval 을 일별 데이터에 금요일
+   날짜로 머지한 뒤 리샘플해서, 금요일이 휴장인 주(성금요일 · 준틴스 ·
+   독립기념일 등)의 Eval 이 NaN 이 되어 그 주 전체가 조용히 삭제됐습니다.
+   이후 모든 주의 전주 가격 참조가 어긋나 매매 체인이 갈라졌습니다.
+   -> 이제 주간 QQQ 에서 OLS/Eval 을 직접 재계산 (봇과 동일).
+2. **QQQ 13주 MA 워밍업** — 기존 앱은 시작일 이후 데이터로만 MA 를 계산해
+   첫 13주의 멜트업 필터 판정이 봇과 달랐습니다. -> 전체 히스토리 기준.
+3. **초기 현금** — 기존 앱은 현금을 정확히 비중대로 고정하고 정수 주수
+   잔액을 버렸습니다. -> 원금 - 주식매수액 (봇과 동일, 잔액 보존).
 
 ### v4.9 변경 — 분석용 로그 강화
 - 백테스트 매매 로그가 **매주 1행(관망 포함) 완전 패널**로 바뀌었습니다.
 - 모든 값이 **raw 숫자(무포맷)** 라 CSV 다운로드만으로 전략 재현/검증이 가능합니다.
-- v5.0 에서 파킹 컬럼 (parked / park_interest / park_buffer) 이 추가되었습니다.
 """)
