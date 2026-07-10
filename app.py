@@ -1,5 +1,16 @@
-# wedaeri_app.py — TQQQ 위대리 v5.1
+# wedaeri_app.py — TQQQ 위대리 v5.2
 # Tab1: 실전 트레이딩 | Tab2: 백테스트 분석 | Tab3: 전략 로직
+#
+# v5.2 변경사항 (200일 추세 게이트 + 프리-2010 합성 데이터):
+#   • [신규] 200일 추세 게이트 on/off — 기초지수(QQQ)가 200일 SMA 아래로
+#     이탈하면 전량 현금화, 회복하면 재진입. 닷컴/2008/2022 같은 레짐 붕괴
+#     꼬리를 절단하는 "선택적 재난 보험". 사이드바(실전)·Tab2(백테스트) 토글.
+#     - 검증: 위험조정수익 우월 전략이 아니라 보험 — 강세장 CAGR 일부 반납.
+#       리스크 선호에 따라 ON/OFF. (밴드/확인지연 정교화는 OOS에서 기각됨)
+#   • [신규] 2010년 이전 합성 데이터 — TQQQ 상장(2010-02) 이전을 QQQ 3배
+#     일간리밸런스 합성으로 채워 닷컴(2000-02)·금융위기(2008)까지 백테스트.
+#     ※ 변동성 잠식은 정확하나 금융비용은 근사치 → 절대수익보다 게이트 유무
+#       상대비교 용도. Tab2 토글 ON 시 검증 시작일을 1999-03 까지 선택 가능.
 #
 # v5.1 변경사항 (봇 엔진 동기화 — 주문 수량 불일치 해결):
 #   • SGOV 파킹 로직 전면 제거 (v5.0 롤백) — RP 자동투자로 대체, 복잡도 감소
@@ -53,6 +64,7 @@ DEFAULT_CONFIG = {
     'sH':  2.0,   'sM':  0.3,   'sL': 0.2,
     'bH':  1.0,   'bM':  0.6,   'bL': 2.0,
     'tax_apply_to_bot': False,   # 봇 가상 잔고에 양도세 차감 반영 여부 (기본 OFF)
+    'use_gate': False,           # 200일 추세 게이트 (실전) 기본 OFF
 }
 def load_config() -> dict:
     if CONFIG_FILE.exists():
@@ -85,6 +97,7 @@ def save_config(ss) -> dict:
         'bL':  float(ss.get('p_bL',  DEFAULT_CONFIG['bL'])),
         'tax_apply_to_bot': bool(ss.get('p_tax_apply_to_bot',
                                         DEFAULT_CONFIG['tax_apply_to_bot'])),
+        'use_gate': bool(ss.get('p_use_gate', DEFAULT_CONFIG['use_gate'])),
     }
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
@@ -223,7 +236,7 @@ def delete_tax_payment(date_str: str) -> tuple:
 # ─────────────────────────────────────────────────────────────
 # 1. 페이지 설정 & 스타일
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="위대리 Quantum T-Flow v5.1", layout="wide")
+st.set_page_config(page_title="위대리 Quantum T-Flow v5.2", layout="wide")
 st.markdown("""
 <style>
 [data-testid="stSidebar"] { background-color: #f8f9fa; border-right: 1px solid #dee2e6; }
@@ -263,6 +276,7 @@ if '_cfg_loaded' not in st.session_state:
     ss['p_bM']      = _cfg['bM']
     ss['p_bL']      = _cfg['bL']
     ss['p_tax_apply_to_bot'] = bool(_cfg.get('tax_apply_to_bot', False))
+    ss['p_use_gate'] = bool(_cfg.get('use_gate', False))
 # ─────────────────────────────────────────────────────────────
 # 차트 공통 레이아웃
 # ─────────────────────────────────────────────────────────────
@@ -367,6 +381,17 @@ with st.sidebar:
                             disabled=not v48_enable,
                             help="멜트업 시 HIGH 매도 배율에 곱함. OOS 최적값 0.70")
 
+    # ── v5.2: 200일 추세 게이트 (실전 트레이딩에 적용) ──
+    st.divider()
+    st_use_gate = st.checkbox(
+        "200일 추세 게이트 (재난 보험)", value=bool(_p.get('p_use_gate', False)),
+        key='p_use_gate',
+        help="기초지수(QQQ)가 200일 SMA 아래로 이탈하면 전량 현금화 후 재진입 대기.\n"
+             "닷컴/2008/2022 같은 레짐 붕괴 꼬리를 절단하는 선택적 보험.\n"
+             "검증: 위험조정수익 우월 전략이 아니라 보험 — 강세장 수익 일부 반납.\n"
+             "리스크 선호에 따라 ON/OFF. (변경 후 '설정 저장'하면 봇에도 반영)"
+    )
+
     st.markdown(f"""
 **현재 적용 파라미터**
 | 티어 | Eval | 매도x | 매수x |
@@ -379,11 +404,18 @@ with st.sidebar:
 """)
 # ─────────────────────────────────────────────────────────────
 # 3. 데이터 로딩
+#    - extended=False: 실측만 (2010~). 실전/라이브 기본.
+#    - extended=True : 프리-2010 합성 TQQQ 스플라이스 (1999-03~). 백테스트 전용.
 # ─────────────────────────────────────────────────────────────
+DATA_START_EXT  = "1999-01-01"   # QQQ 상장(1999-03)부터 — 닷컴/2008 포함
+SYNTH_FINANCING = 0.03           # 연 금융비용 근사 (합성 3x)
+SYNTH_EXPENSE   = 0.0086         # TQQQ 운용보수
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def load_wedaeri_data():
+def load_wedaeri_data(extended: bool = False):
     try:
-        raw = yf.download(["QQQ", "TQQQ"], start="2010-01-01",
+        start = DATA_START_EXT if extended else "2010-01-01"
+        raw = yf.download(["QQQ", "TQQQ"], start=start,
                           auto_adjust=True, progress=False)
         if isinstance(raw.columns, pd.MultiIndex):
             df = raw['Close'].copy()
@@ -395,6 +427,22 @@ def load_wedaeri_data():
             df.rename(columns={'index': 'Date'}, inplace=True)
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.dropna(subset=['QQQ']).reset_index(drop=True)
+
+        # ── v5.2: 합성 TQQQ — 실제 상장(2010-02) 이전을 QQQ 3배 일간리밸런스로 ──
+        df['synthetic'] = False
+        if extended and 'TQQQ' in df.columns and df['TQQQ'].notna().any():
+            first_real_idx = int(df['TQQQ'].first_valid_index())
+            if first_real_idx > 0:
+                qret = df['QQQ'].pct_change().fillna(0.0)
+                daily_drag = (3 - 1) * SYNTH_FINANCING / 252 + SYNTH_EXPENSE / 252
+                synth = (1 + (3 * qret - daily_drag)).cumprod()
+                # 실제 TQQQ 첫 종가에 맞춰 합성 구간 스케일 (연속성 보존)
+                scale = float(df.loc[first_real_idx, 'TQQQ']) / float(synth.iloc[first_real_idx])
+                pre = df.index < first_real_idx
+                df.loc[pre, 'TQQQ'] = (synth * scale)[pre].values
+                df.loc[pre, 'synthetic'] = True
+
+        # ── 주간 QQQ OLS → Growth/Eval (일별 df 에 머지, 라이브/Tab3 표시용) ──
         qqq_wkly = (df.set_index('Date')[['QQQ']]
                     .resample('W-FRI').last()
                     .dropna()
@@ -411,14 +459,14 @@ def load_wedaeri_data():
         for i in range(n):
             w     = min(i + 1, W)
             end   = i + 1
-            start = end - w
+            start_ = end - w
             if w == 1:
                 growth_wkly[i] = float(qqq_wkly['QQQ'].iloc[i])
                 continue
-            s_t  = ps_t[end]  - ps_t[start]
-            s_y  = ps_y[end]  - ps_y[start]
-            s_t2 = ps_t2[end] - ps_t2[start]
-            s_ty = ps_ty[end] - ps_ty[start]
+            s_t  = ps_t[end]  - ps_t[start_]
+            s_y  = ps_y[end]  - ps_y[start_]
+            s_t2 = ps_t2[end] - ps_t2[start_]
+            s_ty = ps_ty[end] - ps_ty[start_]
             denom = w * s_t2 - s_t ** 2
             if denom == 0:
                 growth_wkly[i] = float(qqq_wkly['QQQ'].iloc[i])
@@ -438,6 +486,7 @@ def load_wedaeri_data():
 #   - 일별 QQQ/TQQQ 를 W-FRI 로 직접 리샘플 -> 금요일 휴장 주도 포함
 #   - Growth/Eval 을 주간 QQQ 에서 재계산 (봇 compute_expanding_ols 동일)
 #   - QQQ_MA 를 전체 히스토리 기준으로 계산 후 시작일 필터
+#   - v5.2: gate_on (200일 SMA 게이트 플래그) 추가
 # ─────────────────────────────────────────────────────────────
 def compute_expanding_ols(qqq_weekly: pd.DataFrame, W: int = 260) -> np.ndarray:
     """주간 QQQ 시계열로 5년(260주) Expanding Window log-선형 회귀.
@@ -469,11 +518,13 @@ def compute_expanding_ols(qqq_weekly: pd.DataFrame, W: int = 260) -> np.ndarray:
     return growth
 
 
-def build_weekly_panel(data: pd.DataFrame, ma_window_weeks: int = 13) -> pd.DataFrame:
-    """봇과 동일한 주간 패널 생성: Date/QQQ/TQQQ/Growth/Eval/QQQ_MA.
+def build_weekly_panel(data: pd.DataFrame, ma_window_weeks: int = 13,
+                       gate_sma_days: int = 200) -> pd.DataFrame:
+    """봇과 동일한 주간 패널 + 200일 추세 게이트 플래그.
     - 금요일 휴장 주 포함 (W-FRI 라벨, 목요일 종가로 마감)
     - Eval 은 주간 QQQ 에서 직접 재계산 (일별 머지 경유 X — 휴장 주 누락 방지)
     - QQQ_MA 는 전체 히스토리 기준 (시작일 필터는 호출 측에서)
+    - gate_on: 일별 QQQ의 gate_sma_days일 SMA 대비 금요일 종가 위/아래 (인과적)
     """
     d = data.set_index('Date')
     qqq_weekly  = d[['QQQ']].resample('W-FRI').last().dropna().reset_index()
@@ -485,7 +536,16 @@ def build_weekly_panel(data: pd.DataFrame, ma_window_weeks: int = 13) -> pd.Data
             ma_window_weeks, min_periods=1).mean()
     else:
         qqq_weekly['QQQ_MA'] = qqq_weekly['QQQ']
-    return qqq_weekly.merge(tqqq_weekly, on='Date', how='inner')
+    panel = qqq_weekly.merge(tqqq_weekly, on='Date', how='inner')
+    # ── v5.2: 200일 추세 게이트 — 일별 QQQ의 SMA를 금요일에 샘플 ──
+    sma = d['QQQ'].rolling(gate_sma_days, min_periods=gate_sma_days).mean()
+    # 주의: QQQ > NaN 은 NaN 이 아니라 False 를 반환하므로, 워밍업 구간을
+    # .where(sma.notna()) 로 명시적 NaN 처리해야 fillna(True) 가 먹는다.
+    gate_daily = (d['QQQ'] > sma).where(sma.notna())
+    gate_wk = gate_daily.resample('W-FRI').last().reindex(panel['Date'].values)
+    # SMA 워밍업(첫 gate_sma_days 거래일) 구간 NaN → risk-on 으로 간주
+    panel['gate_on'] = pd.Series(gate_wk.values).fillna(True).astype(bool).values
+    return panel
 # ─────────────────────────────────────────────────────────────
 # 3-b. 실시간 종가 주입
 # ─────────────────────────────────────────────────────────────
@@ -520,7 +580,7 @@ def inject_live_price(df: pd.DataFrame) -> pd.DataFrame:
         pass
     return df
 # ─────────────────────────────────────────────────────────────
-# 4. 실전 시뮬레이션 (Tab 1) — v5.1: 봇 동일 패널/초기현금
+# 4. 실전 시뮬레이션 (Tab 1) — v5.1: 봇 동일 패널/초기현금, v5.2: 게이트
 # ─────────────────────────────────────────────────────────────
 def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                     hc=0.06, lc=-0.06,
@@ -530,9 +590,13 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                     dec_sell_scale=0.75,
                     ma_window_weeks=13,
                     trend_threshold=1.08,
-                    sell_rate_multiplier=0.70):
+                    sell_rate_multiplier=0.70,
+                    # ── v5.2: 200일 추세 게이트 ──
+                    use_gate=False,
+                    gate_sma_days=200):
     # v5.1: 봇과 동일한 주간 패널 (휴장 금요일 포함, MA 전체 히스토리)
-    panel = build_weekly_panel(data, ma_window_weeks=ma_window_weeks)
+    panel = build_weekly_panel(data, ma_window_weeks=ma_window_weeks,
+                               gate_sma_days=gate_sma_days)
     wkly = (panel[panel['Date'] >= pd.to_datetime(start_dt)]
             .dropna(subset=['Eval', 'TQQQ'])
             .reset_index(drop=True))
@@ -547,36 +611,56 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
         p    = float(wkly.loc[i, 'TQQQ'])
         ev   = float(wkly.loc[i, 'Eval'])
         tier = 'HIGH' if ev >= hc else ('LOW' if ev <= lc else 'MID')
-        sr   = {'HIGH': sH, 'MID': sM, 'LOW': sL}[tier]
-        br   = {'HIGH': bH, 'MID': bM, 'LOW': bL}[tier]
-        # v4.8 — HIGH-tier 모멘텀 필터: 진짜 멜트업에서만 매도 축소
-        if tier == 'HIGH' and ma_window_weeks > 0:
-            qqq_ma  = float(wkly.loc[i, 'QQQ_MA'])
-            qqq_now = float(wkly.loc[i, 'QQQ'])
-            if not pd.isna(qqq_ma) and qqq_now >= qqq_ma * trend_threshold:
-                sr *= sell_rate_multiplier
-        # v4.8 — 12월 매도 축소 (양도세 이연)
-        if pd.Timestamp(wkly.loc[i, 'Date']).month == 12:
-            sr *= dec_sell_scale
+        gate_on = (not use_gate) or bool(wkly.loc[i, 'gate_on'])
         action, disp_qty = "관망", 0
-        if i > 0:
-            prev_p = float(wkly.loc[i-1, 'TQQQ'])
-            diff   = shares * (p - prev_p)
-            if diff > 0:
-                qty = int(min(round(diff * sr / p), shares))
-                if qty > 0:
-                    action, disp_qty = "매도", -qty
-                    shares -= qty; cash += qty * p
-            elif diff < 0:
-                qty = int(min(cash, abs(diff) * br) / p)
-                if qty > 0:
-                    action, disp_qty = "매수", qty
-                    shares += qty; cash -= qty * p
+
+        if use_gate and not gate_on:
+            # v5.2 — 추세 이탈: 전량 현금화, 신규 매수 금지
+            if shares > 0:
+                disp_qty = -shares
+                cash += shares * p
+                shares = 0
+                action = "게이트청산"
+            else:
+                action = "게이트대기"
+        elif use_gate and shares == 0 and cash > 0:
+            # v5.2 — 게이트 재진입: 목표 주식비중만큼 재투입
+            qty = int((cash * (1 - cash_ratio)) / p)
+            if qty > 0:
+                disp_qty = qty
+                shares += qty; cash -= qty * p
+                action = "게이트재진입"
+        else:
+            sr   = {'HIGH': sH, 'MID': sM, 'LOW': sL}[tier]
+            br   = {'HIGH': bH, 'MID': bM, 'LOW': bL}[tier]
+            # v4.8 — HIGH-tier 모멘텀 필터: 진짜 멜트업에서만 매도 축소
+            if tier == 'HIGH' and ma_window_weeks > 0:
+                qqq_ma  = float(wkly.loc[i, 'QQQ_MA'])
+                qqq_now = float(wkly.loc[i, 'QQQ'])
+                if not pd.isna(qqq_ma) and qqq_now >= qqq_ma * trend_threshold:
+                    sr *= sell_rate_multiplier
+            # v4.8 — 12월 매도 축소 (양도세 이연)
+            if pd.Timestamp(wkly.loc[i, 'Date']).month == 12:
+                sr *= dec_sell_scale
+            if i > 0:
+                prev_p = float(wkly.loc[i-1, 'TQQQ'])
+                diff   = shares * (p - prev_p)
+                if diff > 0:
+                    qty = int(min(round(diff * sr / p), shares))
+                    if qty > 0:
+                        action, disp_qty = "매도", -qty
+                        shares -= qty; cash += qty * p
+                elif diff < 0:
+                    qty = int(min(cash, abs(diff) * br) / p)
+                    if qty > 0:
+                        action, disp_qty = "매수", qty
+                        shares += qty; cash -= qty * p
         total = cash + shares * p
         logs.append({
             '날짜':     wkly.loc[i, 'Date'].strftime('%Y-%m-%d'),
             '시장평가': f"{ev:.2%}",
             '티어':     tier,
+            '게이트':   ('—' if not use_gate else ('보유' if gate_on else '현금(이탈)')),
             '액션':     action,
             '주문수량': disp_qty,
             '보유수량': shares,
@@ -610,14 +694,19 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                       dec_sell_scale=0.75,
                       ma_window_weeks=13,
                       trend_threshold=1.08,
-                      sell_rate_multiplier=0.70):
-    """위대리 전략 백테스트 (수수료 + 양도세 옵션 포함).
+                      sell_rate_multiplier=0.70,
+                      # ── v5.2: 200일 추세 게이트 ──
+                      use_gate=False,
+                      gate_sma_days=200):
+    """위대리 전략 백테스트 (수수료 + 양도세 + 200일 게이트 옵션 포함).
 
     v5.1: 주간 패널을 봇과 동일하게 구성 (build_weekly_panel) —
       금요일 휴장 주 포함 + Eval 주간 재계산 + QQQ_MA 전체 히스토리.
+    v5.2: use_gate 시 기초지수가 200일 SMA 이탈하면 전량 청산, 회복 시 재진입.
     """
     # v5.1: 봇과 동일한 주간 패널 (휴장 금요일 포함, Eval 재계산, MA 전체 히스토리)
-    wkly = build_weekly_panel(data, ma_window_weeks=ma_window_weeks)
+    wkly = build_weekly_panel(data, ma_window_weeks=ma_window_weeks,
+                              gate_sma_days=gate_sma_days)
     if start_date is not None:
         wkly = wkly[wkly['Date'] >= pd.to_datetime(start_date)].reset_index(drop=True)
     if len(wkly) < 2:
@@ -626,6 +715,7 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
     EV      = wkly['Eval'].values.astype(float)
     QQQ_arr = wkly['QQQ'].values.astype(float)
     QMA_arr = wkly['QQQ_MA'].values.astype(float)
+    GATE    = wkly['gate_on'].values.astype(bool)
     if 'Growth' in wkly.columns:
         GROWTH_arr = wkly['Growth'].values.astype(float)
     else:
@@ -713,8 +803,36 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
         dec_applied       = 0
         comm_this         = 0.0
         diff_val          = 0.0
+        note_gate         = ''
         prev_p            = float(P[i-1]) if i > 0 else float('nan')
-        if i > 0:
+        gate_on_now       = (not use_gate) or bool(GATE[i])
+
+        if use_gate and not gate_on_now:
+            # v5.2 — 200일 게이트 OFF: 추세 이탈 → 전량 청산, 신규 매수 금지
+            if shares > 0:
+                sold = shares
+                comm_before = cum_commission
+                realized_pnl_this = _sell(sold, p, cur_year, mark_realized=True)
+                comm_this = cum_commission - comm_before
+                action_label = "매도"
+                qty_signed = -sold
+                note_gate = "게이트청산"
+            else:
+                note_gate = "게이트대기"
+        elif use_gate and gate_on_now and shares == 0 and cash > 0:
+            # v5.2 — 게이트 재진입: 목표 주식비중만큼 재투입
+            budget = cash * (1 - cash_ratio)
+            qty = int(budget / (p * (1 + comm_buy))) if apply_commission else int(budget / p)
+            if qty > 0:
+                shares_before = shares
+                comm_before = cum_commission
+                _buy(qty, p)
+                comm_this = cum_commission - comm_before
+                qty_signed = shares - shares_before
+                if qty_signed > 0:
+                    action_label = "매수"
+                    note_gate = "게이트재진입"
+        elif i > 0:
             diff = shares * (p - P[i-1])
             diff_val = float(diff)
             if diff > 0:
@@ -768,6 +886,7 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
             'qqq_growth':   growth_val,
             'qqq_ma':       qma_val,
             'qqq_ma_ratio': ma_ratio,
+            'gate_on':      int(bool(GATE[i])),
             'tqqq_close':   float(p),
             'tqqq_prev':    prev_p,
             'tqqq_wk_ret':  (float(p) / prev_p - 1.0) if (i > 0 and prev_p > 0) else float('nan'),
@@ -788,7 +907,7 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
             'stock_value':  float(shares * p),
             'total_asset':  float(total_asset),
             'cum_return':   float(total_asset / init_cap - 1.0),
-            'note':         '',
+            'note':         note_gate,
         })
 
         # ── 양도세: 새 해 첫 weekly close 시점에 직전 연도 세액 계산 ──
@@ -842,6 +961,7 @@ def run_full_backtest(data, init_cap=20_000, cash_ratio=0.45,
                     'qqq_growth':   growth_val,
                     'qqq_ma':       qma_val,
                     'qqq_ma_ratio': float('nan'),
+                    'gate_on':      int(bool(GATE[i])),
                     'tqqq_close':   float(p),
                     'tqqq_prev':    float('nan'),
                     'tqqq_wk_ret':  float('nan'),
@@ -974,6 +1094,7 @@ log_df = run_wedaeri_sim(
     ma_window_weeks      = _ss.get('p_ma_w', 13)       if _v48_on else 0,
     trend_threshold      = _ss.get('p_thr', 1.08)      if _v48_on else 99.0,
     sell_rate_multiplier = _ss.get('p_mult', 0.70)     if _v48_on else 1.0,
+    use_gate             = _ss.get('p_use_gate', False),
 )
 tqqq_series = df['TQQQ'].dropna()
 latest_tqqq = float(tqqq_series.iloc[-1]) if not tqqq_series.empty else 0.0
@@ -982,7 +1103,7 @@ latest_eval  = float(eval_series.iloc[-1]) if not eval_series.empty else 0.0
 _hc_rt = _ss.get('p_hc', DEFAULT_CONFIG['hc']) / 100
 _lc_rt = _ss.get('p_lc', DEFAULT_CONFIG['lc']) / 100
 latest_tier  = 'HIGH' if latest_eval >= _hc_rt else ('LOW' if latest_eval <= _lc_rt else 'MID')
-st.title("TQQQ [위대리] v5.1 : 균형형 트레이딩 시스템")
+st.title("TQQQ [위대리] v5.2 : 균형형 트레이딩 시스템")
 tab1, tab2, tab3 = st.tabs(["실전 트레이딩", "백테스트 분석", "전략 로직"])
 # ═══════════════════════════════════════════════════════════════
 # TAB 1 — 실전 트레이딩
@@ -996,17 +1117,23 @@ with tab1:
     c1.metric("시장 모드",     last['티어'],                  last['시장평가'])
     c2.metric("TQQQ 현재가",  f"${latest_tqqq:.2f}")
     c3.metric("현재 총 자산", f"${last['총자산']:,.2f}")
-    c4.metric("매매 주기",    "금요일 (주간 LOC)")
+    if _ss.get('p_use_gate', False):
+        c4.metric("추세 게이트", last['게이트'])
+    else:
+        c4.metric("매매 주기",    "금요일 (주간 LOC)")
+    if _ss.get('p_use_gate', False) and last['게이트'] == '현금(이탈)':
+        st.error("**추세 게이트 OFF — QQQ가 200일선 아래.** 위대리는 전량 현금 대기 중입니다. "
+                 "매수 신호를 내지 않으며, QQQ가 200일선을 회복하면 재진입합니다.", icon="🛡️")
     st.subheader(f"금주 장 마감(LOC) 주문표 ({datetime.now().strftime('%Y-%m-%d')})")
     b_col, s_col = st.columns(2)
     with b_col:
-        val = f"수량: {last['주문수량']} 주" if last['액션'] == "매수" else "대기 (신호 없음)"
+        val = f"수량: {last['주문수량']} 주" if last['액션'] in ("매수", "게이트재진입") else "대기 (신호 없음)"
         st.markdown(
             f'<div class="order-card-buy"><h4>LOC 매수 주문</h4>'
             f'<h1 style="color:#188038;">{val}</h1></div>',
             unsafe_allow_html=True)
     with s_col:
-        val = f"수량: {abs(last['주문수량'])} 주" if last['액션'] == "매도" else "대기 (신호 없음)"
+        val = f"수량: {abs(last['주문수량'])} 주" if last['액션'] in ("매도", "게이트청산") else "대기 (신호 없음)"
         st.markdown(
             f'<div class="order-card-sell"><h4>LOC 매도 주문</h4>'
             f'<h1>{val}</h1></div>',
@@ -1198,7 +1325,7 @@ with tab1:
 # ═══════════════════════════════════════════════════════════════
 with tab2:
     st.subheader("위대리 전략 전체 기간 백테스트")
-    st.caption("TQQQ 상장 첫 주(2010년 2월)부터 현재까지의 전략 시뮬레이션")
+    st.caption("기본 2010년부터. '2010년 이전 합성 데이터'를 켜면 닷컴(2000)·2008까지 확장됩니다.")
     OPT_PARAMS = dict(hc=0.06, lc=-0.06, sH=2.0, sM=0.3, sL=0.2, bH=1.0, bM=0.6, bL=2.0)
     bt_hc, bt_lc = OPT_PARAMS['hc'], OPT_PARAMS['lc']
     bt_sH, bt_sM, bt_sL = OPT_PARAMS['sH'], OPT_PARAMS['sM'], OPT_PARAMS['sL']
@@ -1211,9 +1338,12 @@ with tab2:
             bt_cap = st.number_input("초기 자본 ($)", value=10_000, step=1000,
                                      key='p_bt_cap')
         with col_b:
+            _synth_on = bool(st.session_state.get('p_bt_use_synth', False))
+            _bt_min = datetime(1999, 3, 10).date() if _synth_on else datetime(2010, 2, 11).date()
             bt_start_date = st.date_input(
                 "검증 시작일",
                 value=datetime.strptime("2017-01-01", "%Y-%m-%d").date(),
+                min_value=_bt_min, max_value=datetime.now().date(),
                 key='p_bt_start')
         with col_c:
             bt_end_date = st.date_input(
@@ -1225,6 +1355,22 @@ with tab2:
             help="시작 시점 현금 vs 주식 비중. 기본 45% (검증된 균형점). "
                  "낮출수록 초기 stock 노출 up -> 강세장 수익 up but 첫 약세장 MDD up"
         ) / 100
+        # ── v5.2: 200일 게이트 + 프리-2010 합성 데이터 토글 ──
+        gcol1, gcol2 = st.columns(2)
+        with gcol1:
+            bt_use_gate = st.checkbox(
+                "200일 추세 게이트 적용", value=False, key='p_bt_use_gate',
+                help="QQQ가 200일선 이탈 시 전량 현금화 후 재진입 대기. "
+                     "닷컴/2008/2022 레짐 붕괴 꼬리를 절단(강세장 CAGR 일부 반납).")
+            bt_compare_gate = st.checkbox(
+                "게이트 ON/OFF 동시 비교", value=False, key='p_bt_compare_gate',
+                help="게이트 적용/미적용을 동시에 백테스트해 나란히 비교")
+        with gcol2:
+            bt_use_synth = st.checkbox(
+                "2010년 이전 합성 데이터 사용", value=False, key='p_bt_use_synth',
+                help="TQQQ 상장(2010) 이전을 QQQ 3배 합성으로 채워 닷컴(2000-02)·2008까지 검증. "
+                     "※ 변동성 잠식 정확·금융비용 근사 → 절대수익보다 게이트 유무 상대비교 용도.\n"
+                     "체크 후 '검증 시작일'을 1999-03 까지 선택 가능 (재실행 시 반영).")
         st.caption(
             f"전략 파라미터: 최적화 기본값 고정 "
             f"(hc=+-6%, 매도 H/M/L = 2.0/0.3/0.2, 매수 H/M/L = 1.0/0.6/2.0)"
@@ -1268,6 +1414,7 @@ with tab2:
         trend_threshold      = bt_thr      if v48_bt_on else 99.0,
         sell_rate_multiplier = bt_mult     if v48_bt_on else 1.0,
     )
+    gate_kwargs = dict(use_gate=bt_use_gate, gate_sma_days=200)
     # ── 거래비용 + 양도세 옵션 ─────────────────────────────────
     with st.expander("거래비용 & 양도세 (현실 시뮬레이션)", expanded=False):
         cc1, cc2 = st.columns(2)
@@ -1311,7 +1458,16 @@ with tab2:
             value=False, key='p_compare_strategies', disabled=not apply_tax,
             help="A=1월/5월 50/50, B=5월 일괄, C=1월 일괄 동시 비교")
 
-    df_bt = df[df['Date'] <= pd.to_datetime(bt_end_date)].reset_index(drop=True)
+    # v5.2: 합성 데이터 토글에 따라 소스 선택 (라이브 df 는 실측; 백테스트만 합성 허용)
+    df_source = load_wedaeri_data(extended=True) if bt_use_synth else df
+    df_bt = df_source[df_source['Date'] <= pd.to_datetime(bt_end_date)].reset_index(drop=True)
+    if bt_use_synth and 'synthetic' in df_source.columns and df_source['synthetic'].any():
+        _syn_end = df_source.loc[df_source['synthetic'], 'Date'].max()
+        st.info(
+            f"⚠️ 합성 TQQQ 구간 포함 (~{_syn_end.strftime('%Y-%m')}까지, QQQ 3배 근사). "
+            f"변동성 잠식은 정확하나 금융비용은 근사치입니다 — 절대수익보다 "
+            f"**게이트 유무 상대비교**로 해석하세요.",
+            icon="🧪")
 
     with st.spinner("백테스트 계산 중..."):
         cost_kwargs = dict(
@@ -1332,7 +1488,21 @@ with tab2:
             start_date=bt_start_date,
             **cost_kwargs,
             **v48_kwargs,
+            **gate_kwargs,
         )
+        # v5.2: 게이트 ON/OFF 동시 비교 → 반대 상태도 계산
+        bt_alt = None
+        if bt_compare_gate:
+            bt_alt = run_full_backtest(
+                df_bt, bt_cap, bt_cash_ratio,
+                hc=bt_hc, lc=bt_lc,
+                sH=bt_sH, sM=bt_sM, sL=bt_sL,
+                bH=bt_bH, bM=bt_bM, bL=bt_bL,
+                start_date=bt_start_date,
+                **cost_kwargs,
+                **v48_kwargs,
+                use_gate=(not bt_use_gate), gate_sma_days=200,
+            )
         bt_gross = None
         if compare_costs and (apply_comm or apply_tax):
             bt_gross = run_full_backtest(
@@ -1343,6 +1513,7 @@ with tab2:
                 start_date=bt_start_date,
                 apply_commission=False, apply_tax=False,
                 **v48_kwargs,
+                **gate_kwargs,
             )
 
         bt_strategies = None
@@ -1358,6 +1529,7 @@ with tab2:
                     start_date=bt_start_date,
                     **kw,
                     **v48_kwargs,
+                    **gate_kwargs,
                 )
     if bt_cur is None:
         st.warning("백테스트 데이터가 부족합니다.")
@@ -1388,8 +1560,30 @@ with tab2:
     st.caption(
         f"백테스트 기간: {dates[0].strftime('%Y.%m.%d')} ~ {dates[-1].strftime('%Y.%m.%d')}"
         f"  ({bt_cur['years']:.1f}년) | 초기 자본 ${bt_cap:,} | 초기 현금 {bt_cash_ratio:.0%} | "
-        f"수수료 {'ON' if apply_comm else 'OFF'} / 양도세 {'ON' if apply_tax else 'OFF'}"
+        f"게이트 {'ON' if bt_use_gate else 'OFF'} / 수수료 {'ON' if apply_comm else 'OFF'} / 양도세 {'ON' if apply_tax else 'OFF'}"
     )
+    # ── v5.2: 게이트 ON/OFF 비교 표 ─────────────────────────────
+    if bt_compare_gate and bt_alt is not None:
+        st.markdown("### 게이트 ON/OFF 비교")
+        _on  = bt_cur if bt_use_gate else bt_alt
+        _off = bt_alt if bt_use_gate else bt_cur
+        cmp_g = pd.DataFrame({
+            '구분':   ['게이트 ON', '게이트 OFF', '차이(ON-OFF)'],
+            'CAGR':   [f"{_on['cagr']:.2%}", f"{_off['cagr']:.2%}",
+                       f"{(_on['cagr']-_off['cagr'])*100:+.2f}%p"],
+            'MDD':    [f"{_on['mdd']:.2%}",  f"{_off['mdd']:.2%}",
+                       f"{(_on['mdd']-_off['mdd'])*100:+.2f}%p"],
+            'Calmar': [f"{_on['cal']:.2f}",  f"{_off['cal']:.2f}",
+                       f"{_on['cal']-_off['cal']:+.2f}"],
+            '최종 자산': [f"${_on['final']:,.0f}", f"${_off['final']:,.0f}",
+                          f"${_on['final']-_off['final']:+,.0f}"],
+        })
+        st.dataframe(cmp_g, use_container_width=True, hide_index=True)
+        st.caption(
+            "게이트 ON은 위기 MDD를 크게 줄이는 대신 강세장 CAGR을 반납합니다 "
+            "(검증: 위험조정 우월 전략이 아니라 선택적 재난보험 — 뉴노멀을 믿으면 OFF, "
+            "2022급 재발 대비면 ON)."
+        )
     # ── 거래비용/세금 요약 + Gross vs Net 비교 ─────────────────
     if apply_comm or apply_tax:
         st.markdown("### 거래비용 & 양도세 요약")
@@ -1502,13 +1696,19 @@ with tab2:
     st.markdown("### 누적 자산 곡선 (로그 스케일)")
     fig_eq = go.Figure()
     fig_eq.add_trace(go.Scatter(
-        x=dates, y=bt_cur['eq'], name='위대리',
+        x=dates, y=bt_cur['eq'], name='위대리' + (' (게이트 ON)' if bt_use_gate else ''),
         line=dict(color='#60a5fa', width=2.5)
     ))
     fig_eq.add_trace(go.Scatter(
         x=dates, y=bt_cur['bh_eq'], name='TQQQ B&H',
         line=dict(color='#fb923c', width=1.5, dash='dash'), opacity=0.7
     ))
+    if bt_compare_gate and bt_alt is not None:
+        fig_eq.add_trace(go.Scatter(
+            x=dates, y=bt_alt['eq'],
+            name='위대리 (게이트 ' + ('OFF' if bt_use_gate else 'ON') + ')',
+            line=dict(color='#22c55e', width=1.5, dash='dot'), opacity=0.75
+        ))
     if bt_gross is not None:
         fig_eq.add_trace(go.Scatter(
             x=dates, y=bt_gross['eq'], name='Gross (비용/세금 0)',
@@ -1621,6 +1821,7 @@ with tab2:
                 'Date':      r['date'],
                 'Action':    emoji_map.get(r['action'], r['action']),
                 'Eval/Tier': f"{r['eval']*100:.2f}% ({r['tier']})",
+                'Gate':      '보유' if int(r.get('gate_on', 1)) else '현금',
                 'QQQ종가':    f"${r['qqq_close']:.2f}",
                 'TQQQ종가':   f"${r['tqqq_close']:.2f}",
                 '매수가':     f"${r['tqqq_close']:.2f}" if bq > 0 else "",
@@ -1689,6 +1890,7 @@ with tab2:
 | `qqq_growth` | QQQ 5년 로그추세선의 당일 값 (Growth) |
 | `qqq_ma` | QQQ 13주 이동평균 (Task B용) |
 | `qqq_ma_ratio` | qqq_close / qqq_ma (멜트업 판정: >= trend_threshold) |
+| `gate_on` | 200일 게이트 risk-on(1) / risk-off(0) — 게이트 미적용 백테스트에도 참고용 기록 |
 | `tqqq_close` | TQQQ 종가 (= LOC 체결가) |
 | `tqqq_prev` | 전주 TQQQ 종가 |
 | `tqqq_wk_ret` | TQQQ 주간 수익률 (소수) |
@@ -1709,9 +1911,10 @@ with tab2:
 | `total_asset` | cash + stock_value |
 | `cum_return` | total_asset / 초기자본 - 1 (소수) |
 | `peak` / `drawdown` | 로그 전체 기준 running peak 와 낙폭 (소수) |
-| `note` | 비고 (양도세 대상연도 등) |
+| `note` | 비고 (양도세 대상연도, 게이트청산/재진입 등) |
 
 **바로 써먹는 분석 예시 (pandas):**
+
 ```python
 import pandas as pd
 df = pd.read_csv("wedaeri_trade_log_YYYYMMDD.csv", parse_dates=["date"])
@@ -1719,13 +1922,14 @@ df = pd.read_csv("wedaeri_trade_log_YYYYMMDD.csv", parse_dates=["date"])
 # 티어별 실현손익 분포
 df[df.action=="SELL"].groupby("tier")["realized_pnl"].describe()
 
-# 모멘텀 필터가 실제로 얼마나 자주 발동했나 + 그 주의 성과
-df[df.mom_filter==1][["date","tqqq_wk_ret","sell_qty"]]
+# 게이트가 현금(risk-off)이었던 주 확인
+df[df.gate_on==0][["date","qqq_close","total_asset"]]
 
 # 주간수익률로 CAGR/변동성 재계산해서 지표 재현 검증
 w = df.drop_duplicates("date").set_index("date")["total_asset"]
 ret = w.pct_change().dropna()
 ```
+
 """)
 # ═══════════════════════════════════════════════════════════════
 # TAB 3 — 전략 로직
@@ -1747,11 +1951,13 @@ with tab3:
         st.markdown("""
 ### Step 1. QQQ 시장 평가(Eval) 계산
 **Eval**은 QQQ 현재가가 5년 장기 추세 대비 얼마나 비싸거나 싼지를 나타내는 온도계입니다.
+
 ```python
 log(QQQ) = a + b x t   (t = 주의 순번)
 Growth = exp(a + b x t_오늘)  # 추세선의 오늘 값
 Eval   = (QQQ / Growth) - 1  # 추세 대비 괴리율
 ```
+
 **Eval 해석 (현재 기본 임계값 +-6%):**
 | Eval 값 | 의미 | 티어 |
 |---------|------|------|
@@ -1886,6 +2092,30 @@ Eval   = (QQQ / Growth) - 1  # 추세 대비 괴리율
   초기 현금 비중 45% 유지를 권장합니다.
 """)
     st.divider()
+    st.markdown("### Step 3-b. 200일 추세 게이트 (v5.2 · 선택)")
+    st.markdown("""
+원본 위대리는 **절대 추세 인식이 없어** 레짐 전환(닷컴/2008/2022)과 건강한 눌림목을
+구분하지 못합니다. LOW 티어 물타기(매수 2.0x)가 현금을 소진하면, 진짜 붕괴에서
+나체 3x 매수후보유로 전락해 합성 기준 MDD -71~-97%가 납니다.
+
+**200일 추세 게이트**는 이 꼬리를 자릅니다.
+- 기초지수(QQQ)가 **200일 이동평균 아래로 이탈하면 전량 현금화**, 신규 매수 중단.
+- QQQ가 200일선을 **회복하면 재진입**(목표 주식비중만큼 재투입).
+
+**꼭 알아야 할 사실 (백테스트 검증 결과):**
+- 게이트는 위기 MDD를 크게 줄이지만(-71~-97% → -17~-46%), **강세장 CAGR을 반납**합니다
+  (실측 2010–26 Calmar 원본 ~1.3 → 게이트 ~0.66). 즉 **위험조정수익 우월 전략이 아니라
+  "재난 보험"** 입니다.
+- 밴드/확인지연으로 반납분을 되찾으려는 정교화는 **OOS(표본 밖)에서 기각**됐습니다
+  (2020-03 V자 반등에서 재진입 실패로 오히려 손실). 그래서 순수 게이트만 채택했습니다.
+- **채택은 데이터가 강제하는 게 아니라 리스크 선호 결정입니다.** "닷컴/2008급은 다시 안 온다
+  (뉴노멀)"고 보면 OFF, "2022급(금리발 -80%)은 시스템위기 아니어도 온다"고 보면 ON.
+  실제로 게이트는 실측 2022에서 TQQQ MDD를 -80% → -15% 로 잘랐습니다.
+
+> Tab2 백테스트에서 **게이트 ON/OFF 동시 비교** + **2010년 이전 합성 데이터**를 켜서
+> 닷컴·2008 구간의 방어 효과를 직접 확인하세요.
+""")
+    st.divider()
     st.markdown("### Step 4. 거래비용 & 양도세 모델")
     st.markdown("""
 백테스트는 *명목 수익률* 외에 **거래 수수료** 와 **한국 거주자 양도세** 를 옵션으로 적용해
@@ -2007,6 +2237,14 @@ robust 한 개선입니다.
    첫 13주의 멜트업 필터 판정이 봇과 달랐습니다. -> 전체 히스토리 기준.
 3. **초기 현금** — 기존 앱은 현금을 정확히 비중대로 고정하고 정수 주수
    잔액을 버렸습니다. -> 원금 - 주식매수액 (봇과 동일, 잔액 보존).
+
+### Step 8. v5.2 — 200일 게이트 + 프리-2010 합성
+
+- **200일 추세 게이트** (사이드바·Tab2 토글): QQQ 200일선 이탈 시 전량 현금화 →
+  회복 시 재진입. 레짐 붕괴 꼬리 절단용 선택적 재난보험. 강세장 CAGR은 반납.
+- **2010년 이전 합성 데이터** (Tab2 토글): TQQQ 상장(2010) 이전을 QQQ 3배 일간리밸런스
+  합성으로 채워 닷컴(2000-02)·2008까지 백테스트. 변동성 잠식은 정확, 금융비용은 근사 —
+  **절대수익보다 게이트 유무 상대비교** 용도. 합성 구간은 화면에 경고 배지로 표시됩니다.
 
 ### v4.9 변경 — 분석용 로그 강화
 - 백테스트 매매 로그가 **매주 1행(관망 포함) 완전 패널**로 바뀌었습니다.
