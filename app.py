@@ -1342,7 +1342,7 @@ with tab2:
             _bt_min = datetime(1999, 3, 10).date() if _synth_on else datetime(2010, 2, 11).date()
             bt_start_date = st.date_input(
                 "검증 시작일",
-                value=datetime.strptime("2010-01-01", "%Y-%m-%d").date(),
+                value=datetime.strptime("2011-01-01", "%Y-%m-%d").date(),
                 min_value=_bt_min, max_value=datetime.now().date(),
                 key='p_bt_start')
         with col_c:
