@@ -59,7 +59,7 @@ DEFAULT_CONFIG = {
     'cash':       45,
     'bt_cap':     10000,
     'bt_cash':    45,
-    'bt_start':   '2017-01-01',
+    'bt_start':   '2010-01-01',
     'hc':  6.0,   'lc': -6.0,
     'sH':  2.0,   'sM':  0.3,   'sL': 0.2,
     'bH':  1.0,   'bM':  0.6,   'bL': 2.0,
