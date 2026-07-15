@@ -1,3 +1,4 @@
+# 위대리-H 앱 + 봇 공용 의존성
 streamlit>=1.33
 pandas>=2.0
 numpy>=1.24
@@ -5,3 +6,5 @@ yfinance>=0.2.40
 plotly>=5.18
 gspread>=6.0
 google-auth>=2.28
+requests>=2.31
+pyarrow>=14.0
