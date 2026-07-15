@@ -264,6 +264,86 @@ def load_dongpa_total() -> tuple:
 
 
 # ─────────────────────────────────────────────────────────────
+# 현금 조정(리밸런싱 입출금) 기록 — 주식수 불변, 예수금만 변동
+#   시트 '현금조정' 탭: date | amount | note
+#   amount 양수=입금(위대리로 유입), 음수=출금(위대리에서 유출)
+# ─────────────────────────────────────────────────────────────
+CASHADJ_SHEET_NAME = "현금조정"
+CASHADJ_HEADER = ['date', 'amount', 'note']
+
+
+def load_cash_adjustments() -> tuple:
+    """Returns: (list[{date,amount,note}], error_str)."""
+    try:
+        gc, err = _get_gspread_client()
+        if gc is None:
+            return [], err or "인증 실패"
+        sh = gc.open_by_key(SHEET_KEY)
+        try:
+            ws = sh.worksheet(CASHADJ_SHEET_NAME)
+        except Exception:
+            return [], ""
+        records = ws.get_all_records()
+        out = []
+        for r in records:
+            try:
+                amt_raw = str(r.get('amount', '')).replace('$', '').replace(',', '').strip()
+                if amt_raw == '':
+                    continue
+                out.append({'date': str(r.get('date', '')),
+                            'amount': float(amt_raw),
+                            'note': str(r.get('note', ''))})
+            except Exception:
+                continue
+        out.sort(key=lambda x: x['date'])
+        return out, ""
+    except Exception as e:
+        return [], str(e)
+
+
+def save_cash_adjustment(adj: dict) -> tuple:
+    try:
+        gc, err = _get_gspread_client()
+        if gc is None:
+            return False, err or "인증 실패"
+        sh = gc.open_by_key(SHEET_KEY)
+        try:
+            ws = sh.worksheet(CASHADJ_SHEET_NAME)
+        except Exception:
+            ws = sh.add_worksheet(title=CASHADJ_SHEET_NAME, rows=200, cols=3)
+            _sheets_write(ws, [CASHADJ_HEADER])
+        ws.append_row([str(adj.get(k, '')) for k in CASHADJ_HEADER],
+                      value_input_option='USER_ENTERED')
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def delete_cash_adjustment(date_str: str, amount: float) -> tuple:
+    try:
+        gc, err = _get_gspread_client()
+        if gc is None:
+            return False, err or "인증 실패"
+        sh = gc.open_by_key(SHEET_KEY)
+        try:
+            ws = sh.worksheet(CASHADJ_SHEET_NAME)
+        except Exception:
+            return False, "시트 없음"
+        records = ws.get_all_records()
+        for i, r in enumerate(records):
+            try:
+                amt_raw = str(r.get('amount', '')).replace('$', '').replace(',', '').strip()
+                if str(r.get('date', '')) == date_str and abs(float(amt_raw) - amount) < 0.01:
+                    ws.delete_rows(i + 2)
+                    return True, ""
+            except Exception:
+                continue
+        return False, "기록을 찾을 수 없음"
+    except Exception as e:
+        return False, str(e)
+
+
+# ─────────────────────────────────────────────────────────────
 # 페이지 설정 & 스타일 — Deep-Teal Navigation Console
 #   위대리-H 정체성: 심해 청록(#1e5f74) · 조개잡이가 썰물을 기다리는 심해
 #   (동파공=불꽃 오렌지와 대비되는 짝. 리포트와 색 통일)
@@ -601,7 +681,11 @@ def inject_live_price(df: pd.DataFrame, use_live: bool = False) -> pd.DataFrame:
 # ═════════════════════════════════════════════════════════════════════════
 def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                     hc=0.05, lc=-0.06, floor=FLOOR_EXPO,
-                    use_gate=False, gate_sma_days=200):
+                    use_gate=False, gate_sma_days=200,
+                    cash_adjustments=None):
+    """cash_adjustments: [{'date':'YYYY-MM-DD','amount':float}, ...]
+       리밸런싱 등으로 예수금만 조정(주식 수 불변). amount 양수=입금, 음수=출금.
+       해당 날짜가 속한 주(그 주 금요일 종가 시점)에 현금에 반영된다."""
     panel = build_weekly_panel(data, gate_sma_days=gate_sma_days)
     wkly = (panel[panel['Date'] >= pd.to_datetime(start_dt)]
             .dropna(subset=['Eval', 'TQQQ']).reset_index(drop=True))
@@ -610,9 +694,26 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
     init_price = float(wkly.loc[0, 'TQQQ'])
     shares = int((init_cap * (1 - cash_ratio)) / init_price)
     cash   = init_cap - shares * init_price
+    # 현금 조정 스케줄 (날짜순, 아직 미반영분)
+    adj_pending = sorted(
+        [{'date': pd.to_datetime(a['date']), 'amount': float(a['amount'])}
+         for a in (cash_adjustments or []) if a.get('amount')],
+        key=lambda x: x['date'])
+    net_injected = 0.0   # 누적 순입금 (수익률 보정용)
     logs   = []
     for i in range(len(wkly)):
         p    = float(wkly.loc[i, 'TQQQ'])
+        bar_date = pd.Timestamp(wkly.loc[i, 'Date'])
+        prev_bar = pd.Timestamp(wkly.loc[i-1, 'Date']) if i > 0 else None
+        # ── 현금 조정 반영: prev_bar < 조정일 <= bar_date 인 것 (첫 주는 <= bar_date) ──
+        still = []
+        for a in adj_pending:
+            due = (a['date'] <= bar_date) if i == 0 else (prev_bar < a['date'] <= bar_date)
+            if due:
+                cash += a['amount']; net_injected += a['amount']
+            else:
+                still.append(a)
+        adj_pending = still
         ev   = float(wkly.loc[i, 'Eval'])
         tier = 'HIGH' if ev >= hc else ('LOW' if ev <= lc else 'MID')
         gate_on = (not use_gate) or bool(wkly.loc[i, 'gate_on'])
@@ -649,6 +750,7 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
                         action, disp_qty = "매수", qty
                         shares += qty; cash -= qty * p
         total = cash + shares * p
+        _basis = init_cap + net_injected   # 입출금은 손익이 아니므로 기준에 반영
         logs.append({
             '날짜':     wkly.loc[i, 'Date'].strftime('%Y-%m-%d'),
             '시장평가': f"{ev:.2%}",
@@ -660,7 +762,7 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
             '현금':     round(cash, 2),
             '노출':     f"{(shares*p/total*100 if total>0 else 0):.1f}%",
             '총자산':   round(total, 2),
-            '수익률':   f"{((total/init_cap - 1)*100 if init_cap > 0 else 0):.2f}%",
+            '수익률':   f"{((total/_basis - 1)*100 if _basis > 0 else 0):.2f}%",
         })
     return pd.DataFrame(logs)
 
@@ -974,11 +1076,13 @@ if df.empty:
     st.error("데이터 로드 실패. 잠시 후 새로고침 해주세요."); st.stop()
 
 _ss = st.session_state
+_cash_adjs, _cash_adj_err = load_cash_adjustments()
 log_df = run_wedaeri_sim(
     df, st_start, st_cap, st_cash_ratio,
     hc=_ss.get('p_hc', 5.0) / 100, lc=_ss.get('p_lc', -6.0) / 100,
     floor=_ss.get('p_floor', 15.0) / 100,
     use_gate=_ss.get('p_use_gate', False),
+    cash_adjustments=_cash_adjs,
 )
 tqqq_series = df['TQQQ'].dropna()
 latest_tqqq = float(tqqq_series.iloc[-1]) if not tqqq_series.empty else 0.0
@@ -1754,15 +1858,72 @@ with tab4:
 | 동파공 | ${dpg_now:,.0f} | | **${tgt_dpg:,.0f}** |
 | 위대리-H | ${wed_now:,.0f} | | **${tgt_wed:,.0f}** |
 """)
+        wed_delta = -amt if src == "위대리-H" else amt   # 위대리 입장 증감 (+입금/−출금)
         st.markdown(f"""
 <div class="callout amber">
 <span class="k">실행 체크리스트</span>
 ① <b>현금으로 이동</b>하세요 (주식 매도 시 양도세 발생 — 위대리-H는 현금 비중이 높아 대개 현금으로 가능).<br>
-② 이동 후 <b>각 봇의 원금(INITIAL_CAP)을 조정</b>: {src}는 −${amt:,.0f}, {dst}는 +${amt:,.0f}.<br>
-③ 위대리-H는 사이드바 <b>시작 원금</b>을 <b>${tgt_wed:,.0f}</b>로 바꾸고 "설정 저장" (봇 자동 반영).<br>
-④ 동파공은 해당 앱/시트에서 원금을 <b>${tgt_dpg:,.0f}</b>로 갱신.
+② 위대리-H는 <b>아래 '현금 조정 기록'</b>에 <b>{wed_delta:+,.0f}</b>을 입력하세요.
+   → 주식 수는 그대로 두고 <b>예수금만</b> 조정됩니다 (원금·주식수 재계산 없음).<br>
+③ 동파공은 해당 앱/시트에서 운용원금을 <b>${tgt_dpg:,.0f}</b>로 갱신.
 </div>
 """, unsafe_allow_html=True)
+
+    # ── 현금 조정 기록 (리밸런싱 입출금) ──
+    sec("현금 조정 기록", "Cash Adjustment")
+    st.markdown("""
+리밸런싱으로 위대리-H 계좌의 **예수금이 늘거나 줄면** 여기에 기록하세요.
+**주식 수는 그대로 두고 현금만** 조정합니다 (원금을 바꿔 전체를 재계산하는 것과 다릅니다).
+""")
+    st.markdown("""
+<div class="callout">
+<span class="k">부호 규칙</span>
+· <b>양수(+)</b> = 위대리-H로 <b>현금 유입</b> (동파공에서 받아옴 → 매수 실탄 증가)<br>
+· <b>음수(−)</b> = 위대리-H에서 <b>현금 유출</b> (동파공으로 보냄 → 매수 실탄 감소)
+</div>
+""", unsafe_allow_html=True)
+
+    adj_c1, adj_c2 = st.columns([1, 1])
+    with adj_c1:
+        st.markdown("**새 조정 추가**")
+        with st.form("cash_adj_form", clear_on_submit=True):
+            a_date = st.date_input("조정일 (자금 이동한 날)", value=datetime.now().date(), key='p_adj_date')
+            a_amt = st.number_input("금액 ($, 유입=+ / 유출=−)", value=0.0, step=1000.0, key='p_adj_amt',
+                                    help="예: 동파공에서 $64,582 받아오면 +64582, 동파공으로 보내면 −64582")
+            a_note = st.text_input("메모 (선택)", value="리밸런싱", key='p_adj_note')
+            if st.form_submit_button("기록 저장", use_container_width=True):
+                if abs(a_amt) < 0.01:
+                    st.error("금액이 0입니다.")
+                else:
+                    ok, err = save_cash_adjustment({'date': a_date.strftime("%Y-%m-%d"),
+                                                    'amount': round(a_amt, 2), 'note': a_note})
+                    if ok:
+                        load_cash_adjustments.clear()
+                        st.success(f"기록 완료: {a_amt:+,.0f}"); st.rerun()
+                    else:
+                        st.error(f"저장 실패: {err}")
+    with adj_c2:
+        st.markdown("**기록된 조정**")
+        if _cash_adj_err:
+            st.error(f"시트 로드 실패: {_cash_adj_err}")
+        elif not _cash_adjs:
+            st.info("아직 기록된 조정이 없습니다.")
+        else:
+            _net = sum(a['amount'] for a in _cash_adjs)
+            _df_adj = pd.DataFrame([{'날짜': a['date'], '금액': f"{a['amount']:+,.0f}", '메모': a['note']}
+                                    for a in _cash_adjs])
+            st.dataframe(_df_adj, use_container_width=True, hide_index=True)
+            st.caption(f"누적 순조정: **{_net:+,.0f}** ({len(_cash_adjs)}건) — 현재 예수금에 반영됨")
+            _del_opts = ['(선택 안 함)'] + [f"{a['date']} · {a['amount']:+,.0f}" for a in _cash_adjs]
+            _del = st.selectbox("삭제할 기록", _del_opts, key='p_adj_del')
+            if _del != '(선택 안 함)' and st.button("선택 기록 삭제", use_container_width=True):
+                _idx = _del_opts.index(_del) - 1
+                ok, err = delete_cash_adjustment(_cash_adjs[_idx]['date'], _cash_adjs[_idx]['amount'])
+                if ok:
+                    load_cash_adjustments.clear()
+                    st.success("삭제 완료"); st.rerun()
+                else:
+                    st.error(f"삭제 실패: {err}")
 
     # ── 리밸런싱 빈도 안내 ──
     sec("리밸런싱 원칙", "Guideline")
