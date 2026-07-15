@@ -391,7 +391,7 @@ CHART_LAYOUT = dict(
     font=dict(color='#9fbcc7', size=11, family='IBM Plex Mono'),
     margin=dict(l=10, r=10, t=44, b=10),
     legend=dict(orientation='h', y=1.14, font=dict(size=10)),
-    title=dict(font=dict(family='Space Grotesk', size=14, color='#dce8ec')),
+    title_font=dict(family='Space Grotesk', size=14, color='#dce8ec'),
     hoverlabel=dict(bgcolor='#122630', bordercolor='#1e5f74', font=dict(family='IBM Plex Mono')),
 )
 # 위대리-H 시그니처 팔레트
