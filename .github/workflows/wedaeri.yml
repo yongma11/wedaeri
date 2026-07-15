@@ -1,5 +1,4 @@
 name: Wedaeri Autobot Triggered by Cron-job
-
 on:
   repository_dispatch:
     types: [external_trigger]
@@ -23,9 +22,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Wedaeri Autobot
+      - name: Run Wedaeri-H Autobot
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
           BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python Wedaeri_h_bot.py
+        run: python wedaeri_h_bot.py
