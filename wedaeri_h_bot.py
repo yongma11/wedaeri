@@ -236,6 +236,30 @@ def load_tax_payments(sh) -> list:
         return []
 
 
+def load_cash_adjustments(sh) -> list:
+    """'현금조정' 탭: date | amount | note.
+    리밸런싱 등 예수금만 조정(주식수 불변). amount 양수=입금, 음수=출금.
+    앱(wedaeri_h_app.py)과 동일 규칙."""
+    try:
+        ws = sh.worksheet("현금조정")
+        records = ws.get_all_records()
+        out = []
+        for r in records:
+            try:
+                amt_raw = str(r.get('amount', '')).replace('$', '').replace(',', '').strip()
+                if amt_raw == '':
+                    continue
+                out.append({'date': str(r.get('date', '')), 'amount': float(amt_raw),
+                            'note': str(r.get('note', ''))})
+            except Exception:
+                continue
+        out.sort(key=lambda x: x['date'])
+        return out
+    except Exception as e:
+        print(f"ℹ️ '현금조정' 시트 없음 — 조정 스킵: {e}")
+        return []
+
+
 def reconcile(virtual_shares, virtual_cash, actual, init_cap):
     if not actual: return ""
     drift_shares = virtual_shares - actual['shares']
@@ -417,6 +441,14 @@ def main():
         tax_payments = []
         print("ℹ️ 양도세 봇 차감 토글 OFF — 시뮬은 세전 잔고로 진행")
 
+    # 현금 조정(리밸런싱 입출금) 로드 — 항상 적용 (토글과 무관, 주식수 불변)
+    cash_adjustments = load_cash_adjustments(sh)
+    if cash_adjustments:
+        _net_adj = sum(a['amount'] for a in cash_adjustments)
+        print(f"💵 현금 조정 {len(cash_adjustments)}건 로드 (순 {_net_adj:+,.2f}) — 예수금만 반영, 주식수 불변")
+        for a in cash_adjustments:
+            print(f"   {a['date']} | {a['amount']:+,.2f} | {a['note']}")
+
     try:
         # B. 일별 데이터
         end_dt = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -487,11 +519,30 @@ def main():
         buy_r  = {'HIGH': params['bH'], 'MID': params['bM'], 'LOW': params['bL']}
 
         tax_to_apply = list(tax_payments); cum_paid_tax = 0.0; n_floor_block = 0
+        adj_to_apply = list(cash_adjustments); net_injected = 0.0
+
+        # H0. 시작일(첫 주) 이전/당일 조정 반영 (초기 매수 직후 예수금에)
+        if adj_to_apply:
+            first_bar = pd.Timestamp(sim.loc[0, 'Date']); still = []
+            for a in adj_to_apply:
+                if pd.Timestamp(a['date']) <= first_bar:
+                    cash += a['amount']; net_injected += a['amount']
+                else:
+                    still.append(a)
+            adj_to_apply = still
 
         # H. 과거 매매 복기 (시작일+1 ~ 마지막 주 직전) — ★위대리-H 규칙
         for i in range(1, len(sim) - 1):
             p, prev_p, ev = float(sim.loc[i, 'TQQQ']), float(sim.loc[i-1, 'TQQQ']), float(sim.loc[i, 'Eval'])
             bar_date = pd.Timestamp(sim.loc[i, 'Date']); prev_bar_date = pd.Timestamp(sim.loc[i-1, 'Date'])
+            # 현금 조정 반영 (매매 전 예수금에 먼저 — 그 주 매수 실탄으로 쓰이게)
+            still_adj = []
+            for a in adj_to_apply:
+                if prev_bar_date < pd.Timestamp(a['date']) <= bar_date:
+                    cash += a['amount']; net_injected += a['amount']
+                else:
+                    still_adj.append(a)
+            adj_to_apply = still_adj
             tier = get_tier(ev, hc, lc); diff = shares * (p - prev_p)
             if diff > 0 and shares > 0:
                 qty = sell_qty_with_floor(diff, p, shares, cash, sell_r[tier], floor)
@@ -510,12 +561,19 @@ def main():
                 else:
                     still_pending.append(pay)
             tax_to_apply = still_pending
+        # 복기 마지막 주 이후 ~ 현재 사이의 잔여 조정/세금
+        last_replay_date = pd.Timestamp(sim.loc[len(sim) - 2, 'Date']); now_ts = pd.Timestamp.now().normalize()
+        if adj_to_apply:
+            for a in adj_to_apply:
+                if last_replay_date < pd.Timestamp(a['date']) <= now_ts:
+                    cash += a['amount']; net_injected += a['amount']
         if tax_to_apply:
-            last_replay_date = pd.Timestamp(sim.loc[len(sim) - 2, 'Date']); now_ts = pd.Timestamp.now().normalize()
             for pay in tax_to_apply:
                 pay_date = pd.Timestamp(pay['date'])
                 if last_replay_date < pay_date <= now_ts:
                     cash -= pay['amount_usd']; cum_paid_tax += pay['amount_usd']
+        if abs(net_injected) > 0:
+            print(f"💵 누적 현금 조정 반영: {net_injected:+,.2f} (주식수 불변)")
         print(f"💰 누적 양도세 차감: ${cum_paid_tax:,.2f} | 노출하한 발동(복기): {n_floor_block}회")
 
         # I. 이번 주 신호 — ★위대리-H 규칙 (노출 하한 적용)
@@ -545,7 +603,8 @@ def main():
         else:
             est_shares, est_cash = shares, cash
         total_asset = est_cash + est_shares * cur_p
-        pnl_pct  = (total_asset / initial_cap - 1) * 100
+        _basis = initial_cap + net_injected   # 입출금은 손익이 아니므로 기준에 반영
+        pnl_pct  = (total_asset / _basis - 1) * 100 if _basis > 0 else 0
         cash_pct = est_cash / total_asset * 100 if total_asset > 0 else 0
         expo_pct = est_shares * cur_p / total_asset * 100 if total_asset > 0 else 0
         recon_msg = reconcile(est_shares, est_cash, actual_balance, initial_cap)
