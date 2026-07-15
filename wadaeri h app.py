@@ -242,21 +242,20 @@ def delete_tax_payment(date_str: str) -> tuple:
 st.set_page_config(page_title="위대리-H · Navigation Console", layout="wide",
                    initial_sidebar_state="expanded")
 st.markdown("""
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@300;400;500;600&display=swap');
 :root{
-  --abyss:#0a1418; --abyss-2:#0e1b21; --panel:#122630; --panel-2:#16303c;
-  --teal:#2b9db8; --teal-deep:#1e5f74; --teal-glow:#4dd0e1;
-  --amber:#d99a1c; --crimson:#c65454; --good:#3fb37f;
-  --ink:#dce8ec; --mist:#7b98a3; --mist-2:#5a7480; --line:#1d3843;
-  --mono:'IBM Plex Mono',monospace; --disp:'Space Grotesk',sans-serif;
-  --sans:'IBM Plex Sans KR',system-ui,sans-serif;
+--abyss:#0a1418; --abyss-2:#0e1b21; --panel:#122630; --panel-2:#16303c;
+--teal:#2b9db8; --teal-deep:#1e5f74; --teal-glow:#4dd0e1;
+--amber:#d99a1c; --crimson:#c65454; --good:#3fb37f;
+--ink:#dce8ec; --mist:#7b98a3; --mist-2:#5a7480; --line:#1d3843;
+--mono:'IBM Plex Mono',monospace; --disp:'Space Grotesk',sans-serif;
+--sans:'IBM Plex Sans KR',system-ui,sans-serif;
 }
 .stApp{ background:
-    radial-gradient(1200px 600px at 20% -10%, #12303b55 0%, transparent 60%),
-    radial-gradient(900px 500px at 90% 0%, #1e5f7433 0%, transparent 55%),
-    var(--abyss); }
+radial-gradient(1200px 600px at 20% -10%, #12303b55 0%, transparent 60%),
+radial-gradient(900px 500px at 90% 0%, #1e5f7433 0%, transparent 55%),
+var(--abyss); }
 .main .block-container{ padding-top:2.2rem; max-width:1200px; }
 body, .stMarkdown, p, span, div{ font-family:var(--sans); color:var(--ink); }
 h1,h2,h3,h4{ font-family:var(--disp); letter-spacing:-0.01em; }
@@ -264,97 +263,97 @@ h1,h2,h3,h4{ font-family:var(--disp); letter-spacing:-0.01em; }
 [data-testid="stHeader"]{ background:transparent; }
 
 [data-testid="stSidebar"]{ background:linear-gradient(180deg,#0c1b22,#0a1418);
-    border-right:1px solid var(--line); }
+border-right:1px solid var(--line); }
 [data-testid="stSidebar"] * { color:var(--ink); }
 [data-testid="stSidebar"] .stMarkdown h2{ font-size:1.05rem; color:var(--teal-glow); }
 
 .hero{ position:relative; border:1px solid var(--line); border-radius:18px;
-    padding:30px 34px; margin-bottom:8px; overflow:hidden;
-    background:linear-gradient(135deg, #103039 0%, #0c2029 55%, #0a1418 100%); }
+padding:30px 34px; margin-bottom:8px; overflow:hidden;
+background:linear-gradient(135deg, #103039 0%, #0c2029 55%, #0a1418 100%); }
 .hero::before{ content:""; position:absolute; inset:0;
-    background:radial-gradient(600px 200px at 85% 20%, #2b9db822, transparent 70%);
-    pointer-events:none; }
+background:radial-gradient(600px 200px at 85% 20%, #2b9db822, transparent 70%);
+pointer-events:none; }
 .hero-eyebrow{ font-family:var(--mono); font-size:11px; letter-spacing:.32em;
-    text-transform:uppercase; color:var(--teal); font-weight:600; }
+text-transform:uppercase; color:var(--teal); font-weight:600; }
 .hero-title{ font-family:var(--disp); font-weight:700; font-size:2.5rem; line-height:1.05;
-    margin:10px 0 6px; color:#eaf6f9; }
+margin:10px 0 6px; color:#eaf6f9; }
 .hero-title .h{ color:var(--teal-glow); }
 .hero-sub{ font-size:.95rem; color:var(--mist); max-width:62ch; line-height:1.6; }
 .hero-chips{ display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
 .chip{ font-family:var(--mono); font-size:11px; padding:5px 11px; border-radius:20px;
-    border:1px solid var(--line); background:#0e2129; color:var(--mist); }
+border:1px solid var(--line); background:#0e2129; color:var(--mist); }
 .chip b{ color:var(--teal-glow); font-weight:600; }
 
 [data-testid="stMetric"]{ background:linear-gradient(160deg,#132a34,#0e2027);
-    border:1px solid var(--line); border-radius:14px; padding:16px 18px;
-    box-shadow:0 4px 18px #05101499; transition:border-color .2s, transform .2s; }
+border:1px solid var(--line); border-radius:14px; padding:16px 18px;
+box-shadow:0 4px 18px #05101499; transition:border-color .2s, transform .2s; }
 [data-testid="stMetric"]:hover{ border-color:var(--teal-deep); transform:translateY(-2px); }
 [data-testid="stMetricLabel"]{ font-family:var(--mono); font-size:11px !important;
-    letter-spacing:.05em; color:var(--mist) !important; text-transform:uppercase; }
+letter-spacing:.05em; color:var(--mist) !important; text-transform:uppercase; }
 [data-testid="stMetricValue"]{ font-family:var(--disp); font-weight:600;
-    color:#eaf6f9 !important; font-variant-numeric:tabular-nums; }
+color:#eaf6f9 !important; font-variant-numeric:tabular-nums; }
 [data-testid="stMetricDelta"]{ font-family:var(--mono); font-size:12px !important; }
 
 .stTabs [data-baseweb="tab-list"]{ gap:4px; background:#0c1c23; padding:5px;
-    border-radius:12px; border:1px solid var(--line); }
+border-radius:12px; border:1px solid var(--line); }
 .stTabs [data-baseweb="tab"]{ height:42px; border-radius:8px; padding:0 22px;
-    font-family:var(--disp); font-weight:500; font-size:.92rem; color:var(--mist);
-    background:transparent; }
+font-family:var(--disp); font-weight:500; font-size:.92rem; color:var(--mist);
+background:transparent; }
 .stTabs [aria-selected="true"]{ background:linear-gradient(135deg,#1e5f74,#134350) !important;
-    color:#eaf6f9 !important; box-shadow:0 2px 12px #1e5f7455; }
+color:#eaf6f9 !important; box-shadow:0 2px 12px #1e5f7455; }
 
 .order-card-buy{ background:linear-gradient(160deg,#0f3328,#0c2620);
-    border:1px solid #1c5a44; border-radius:16px; padding:26px; text-align:center; }
+border:1px solid #1c5a44; border-radius:16px; padding:26px; text-align:center; }
 .order-card-buy h4{ color:var(--good); font-family:var(--mono); font-size:12px;
-    letter-spacing:.15em; text-transform:uppercase; margin:0 0 8px; }
+letter-spacing:.15em; text-transform:uppercase; margin:0 0 8px; }
 .order-card-buy .big{ font-family:var(--disp); font-size:2rem; font-weight:700; color:#5fe0a8; }
 .order-card-sell{ background:linear-gradient(160deg,#2a1618,#231215);
-    border:1px solid #5a2c30; border-radius:16px; padding:26px; text-align:center; }
+border:1px solid #5a2c30; border-radius:16px; padding:26px; text-align:center; }
 .order-card-sell h4{ color:var(--crimson); font-family:var(--mono); font-size:12px;
-    letter-spacing:.15em; text-transform:uppercase; margin:0 0 8px; }
+letter-spacing:.15em; text-transform:uppercase; margin:0 0 8px; }
 .order-card-sell .big{ font-family:var(--disp); font-size:2rem; font-weight:700; color:#e88a8a; }
 .order-card-hold{ background:linear-gradient(160deg,#16232b,#111c22);
-    border:1px solid var(--line); border-radius:16px; padding:26px; text-align:center; }
+border:1px solid var(--line); border-radius:16px; padding:26px; text-align:center; }
 .order-card-hold h4{ color:var(--mist); font-family:var(--mono); font-size:12px;
-    letter-spacing:.15em; text-transform:uppercase; margin:0 0 8px; }
+letter-spacing:.15em; text-transform:uppercase; margin:0 0 8px; }
 .order-card-hold .big{ font-family:var(--disp); font-size:2rem; font-weight:700; color:var(--mist); }
 
 .tier-high{ background:linear-gradient(90deg,#3a2f0c,#1a1608); border-left:3px solid var(--amber);
-    padding:12px 16px; border-radius:8px; margin:6px 0; }
+padding:12px 16px; border-radius:8px; margin:6px 0; }
 .tier-mid{ background:linear-gradient(90deg,#0c2a33,#0a1c22); border-left:3px solid var(--teal);
-    padding:12px 16px; border-radius:8px; margin:6px 0; }
+padding:12px 16px; border-radius:8px; margin:6px 0; }
 .tier-low{ background:linear-gradient(90deg,#0c3326,#0a1f18); border-left:3px solid var(--good);
-    padding:12px 16px; border-radius:8px; margin:6px 0; }
+padding:12px 16px; border-radius:8px; margin:6px 0; }
 .floor-badge{ background:linear-gradient(90deg,#0e2b34,#0b1e25); border-left:3px solid var(--teal-glow);
-    padding:14px 18px; border-radius:8px; margin:8px 0; font-size:.9rem; color:var(--ink); }
+padding:14px 18px; border-radius:8px; margin:8px 0; font-size:.9rem; color:var(--ink); }
 
 .sec-head{ font-family:var(--disp); font-weight:600; font-size:1.15rem; color:#eaf6f9;
-    margin:22px 0 10px; padding-left:12px; border-left:3px solid var(--teal); }
+margin:22px 0 10px; padding-left:12px; border-left:3px solid var(--teal); }
 .sec-eyebrow{ font-family:var(--mono); font-size:10.5px; letter-spacing:.18em;
-    text-transform:uppercase; color:var(--teal); margin-bottom:2px; }
+text-transform:uppercase; color:var(--teal); margin-bottom:2px; }
 
 .callout{ border-left:3px solid var(--teal-deep); background:#0e232b;
-    padding:16px 20px; border-radius:0 10px 10px 0; margin:16px 0; font-size:.92rem;
-    line-height:1.7; color:var(--ink); }
+padding:16px 20px; border-radius:0 10px 10px 0; margin:16px 0; font-size:.92rem;
+line-height:1.7; color:var(--ink); }
 .callout.amber{ border-left-color:var(--amber); background:#241c0c; }
 .callout.crimson{ border-left-color:var(--crimson); background:#241214; }
 .callout .k{ font-family:var(--mono); font-size:10.5px; letter-spacing:.12em;
-    text-transform:uppercase; color:var(--teal-glow); font-weight:600; display:block; margin-bottom:6px; }
+text-transform:uppercase; color:var(--teal-glow); font-weight:600; display:block; margin-bottom:6px; }
 .callout.amber .k{ color:var(--amber); } .callout.crimson .k{ color:#e88a8a; }
 
 .stDataFrame{ border:1px solid var(--line); border-radius:12px; overflow:hidden; }
 .stMarkdown table{ border-collapse:collapse; width:100%; margin:12px 0; font-family:var(--mono); font-size:.86rem; }
 .stMarkdown th{ background:#0e232b; color:var(--teal-glow); font-weight:600;
-    padding:9px 12px; border-bottom:1px solid var(--teal-deep); text-align:left;
-    font-family:var(--mono); font-size:.8rem; text-transform:uppercase; letter-spacing:.03em; }
+padding:9px 12px; border-bottom:1px solid var(--teal-deep); text-align:left;
+font-family:var(--mono); font-size:.8rem; text-transform:uppercase; letter-spacing:.03em; }
 .stMarkdown td{ padding:8px 12px; border-bottom:1px solid var(--line); color:var(--ink); }
 .stMarkdown tr:hover td{ background:#0e2129; }
 
 .stButton>button{ font-family:var(--disp); font-weight:500; border-radius:9px;
-    border:1px solid var(--teal-deep); background:#0f2831; color:var(--teal-glow); transition:all .18s; }
+border:1px solid var(--teal-deep); background:#0f2831; color:var(--teal-glow); transition:all .18s; }
 .stButton>button:hover{ background:#1e5f74; color:#eaf6f9; border-color:var(--teal); }
 [data-testid="stExpander"]{ border:1px solid var(--line); border-radius:12px;
-    background:#0d1e25; overflow:hidden; }
+background:#0d1e25; overflow:hidden; }
 [data-baseweb="tag"]{ background:var(--teal-deep) !important; }
 hr{ border-color:var(--line); }
 .stAlert{ border-radius:12px; }
@@ -916,20 +915,20 @@ _tier_label = {'HIGH': '고평가', 'MID': '중립', 'LOW': '저평가'}[latest_
 _tier_color = {'HIGH': C_AMBER, 'MID': C_TEAL_GLOW, 'LOW': C_GOOD}[latest_tier]
 st.markdown(f"""
 <div class="hero">
-  <div class="hero-eyebrow">Wedaeri-H · Navigation Console · vH1.0</div>
-  <div class="hero-title">썰물을 기다리는 <span class="h">심해의 매집기</span></div>
-  <div class="hero-sub">
-    QQQ 5년 추세선 대비 저평가 구간에서 TQQQ를 사 모으고, 고평가에서 덜어낸다.
-    노출 하한 15%로 절대 잠들지 않으며, 폭락이 오면 쌓아둔 현금으로 반격한다 —
-    동파공의 <b style="color:#4dd0e1">헤지 슬리브</b>로 설계된 역추세 엔진.
-  </div>
-  <div class="hero-chips">
-    <span class="chip">현재 평가 <b style="color:{_tier_color}">{latest_eval:+.2%}</b> · {_tier_label}</span>
-    <span class="chip">TQQQ <b>${latest_tqqq:.2f}</b></span>
-    <span class="chip">매도 100/50/33 · 매수 50/50/100</span>
-    <span class="chip">노출 하한 <b>15%</b></span>
-    <span class="chip">권장 배분 <b>동파공 7 : 위대리-H 3</b></span>
-  </div>
+<div class="hero-eyebrow">Wedaeri-H · Navigation Console · vH1.0</div>
+<div class="hero-title">썰물을 기다리는 <span class="h">심해의 매집기</span></div>
+<div class="hero-sub">
+QQQ 5년 추세선 대비 저평가 구간에서 TQQQ를 사 모으고, 고평가에서 덜어낸다.
+노출 하한 15%로 절대 잠들지 않으며, 폭락이 오면 쌓아둔 현금으로 반격한다 —
+동파공의 <b style="color:#4dd0e1">헤지 슬리브</b>로 설계된 역추세 엔진.
+</div>
+<div class="hero-chips">
+<span class="chip">현재 평가 <b style="color:{_tier_color}">{latest_eval:+.2%}</b> · {_tier_label}</span>
+<span class="chip">TQQQ <b>${latest_tqqq:.2f}</b></span>
+<span class="chip">매도 100/50/33 · 매수 50/50/100</span>
+<span class="chip">노출 하한 <b>15%</b></span>
+<span class="chip">권장 배분 <b>동파공 7 : 위대리-H 3</b></span>
+</div>
 </div>
 """, unsafe_allow_html=True)
 tab1, tab2, tab3 = st.tabs(["◆ 실전 트레이딩", "◆ 백테스트 분석", "◆ 전략 로직"])
@@ -1318,26 +1317,26 @@ with tab2:
 with tab3:
     # ── 전략 로직 히어로 ──
     st.markdown("""
-    <div class="hero" style="margin-bottom:20px">
-      <div class="hero-eyebrow">Strategy Deep-Dive · 전략 완전 해설</div>
-      <div class="hero-title" style="font-size:2rem">역추세 매집기의 <span class="h">해부도</span></div>
-      <div class="hero-sub">
-        왜 이 전략이 존재하는가, 어떻게 사고파는가, 무엇이 원본과 다른가,
-        그리고 왜 혼자 쓰면 안 되고 동파공과 짝을 이뤄야 하는가 —
-        위대리-H의 모든 설계 결정을 근거와 함께 풀어냅니다.
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+<div class="hero" style="margin-bottom:20px">
+<div class="hero-eyebrow">Strategy Deep-Dive · 전략 완전 해설</div>
+<div class="hero-title" style="font-size:2rem">역추세 매집기의 <span class="h">해부도</span></div>
+<div class="hero-sub">
+왜 이 전략이 존재하는가, 어떻게 사고파는가, 무엇이 원본과 다른가,
+그리고 왜 혼자 쓰면 안 되고 동파공과 짝을 이뤄야 하는가 —
+위대리-H의 모든 설계 결정을 근거와 함께 풀어냅니다.
+</div>
+</div>
+""", unsafe_allow_html=True)
 
     st.markdown("""
-    <div class="callout">
-    <span class="k">한 줄 정의</span>
-    <b>위대리-H</b>는 "가격은 결국 장기 추세선으로 되돌아온다"는 <b>평균회귀</b>에 베팅하는
-    역추세 매집 전략입니다. 나스닥100(QQQ)의 5년 추세선보다 쌀 때 3배 레버리지 ETF(TQQQ)를
-    사 모으고, 비쌀 때 덜어냅니다. 원작자 위대리 v1.0을 기반으로 <b>노출 하한 15%</b>를 더해,
-    강세장에서 스스로 현금에 갇히는 문제(경화)를 고친 <b>헤지 슬리브 전용</b> 버전입니다.
-    </div>
-    """, unsafe_allow_html=True)
+<div class="callout">
+<span class="k">한 줄 정의</span>
+<b>위대리-H</b>는 "가격은 결국 장기 추세선으로 되돌아온다"는 <b>평균회귀</b>에 베팅하는
+역추세 매집 전략입니다. 나스닥100(QQQ)의 5년 추세선보다 쌀 때 3배 레버리지 ETF(TQQQ)를
+사 모으고, 비쌀 때 덜어냅니다. 원작자 위대리 v1.0을 기반으로 <b>노출 하한 15%</b>를 더해,
+강세장에서 스스로 현금에 갇히는 문제(경화)를 고친 <b>헤지 슬리브 전용</b> 버전입니다.
+</div>
+""", unsafe_allow_html=True)
 
     # ═══ 1. 왜 존재하는가 ═══
     sec("1 · 왜 이 전략이 존재하는가", "Rationale")
@@ -1414,7 +1413,7 @@ QQQ의 최근 5년(260주) 종가에 로그-선형 회귀를 그어 **장기 추
 매도 신호가 나와도, <b>매도 후 노출이 {_fl:.0f}% 밑으로 내려가면 그 매도를 취소</b>합니다.
 즉 항상 최소 {_fl:.0f}%는 주식으로 들고 갑니다. 딱 이 한 줄로 경화가 사라집니다.
 </div>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
     st.markdown("""
 **개선 효과 (세전, 2010-04~2026-07 검증)**
 
@@ -1460,7 +1459,7 @@ QQQ의 최근 5년(260주) 종가에 로그-선형 회귀를 그어 **장기 추
 "QQQ와 같이 움직입니다. <b>QQQ 하락장에서는 수익을 낼 수 없습니다.</b>
 … 동파·떨사 같은 단기매매, RP·SGOV 같은 원금보장 상품과 <b>병행</b>하세요."
 </div>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
     st.markdown("""
 위대리는 처음부터 **단독 완결 전략이 아닙니다.** QQQ 베타를 그대로 받는 롱-바이어스
 전략이라, 장기 하락장에서는 방법이 없습니다. **동파공(모멘텀)과 짝을 이뤄야** 완성됩니다.
