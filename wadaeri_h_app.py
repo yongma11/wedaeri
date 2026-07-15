@@ -272,6 +272,7 @@ CASHADJ_SHEET_NAME = "현금조정"
 CASHADJ_HEADER = ['date', 'amount', 'note']
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def load_cash_adjustments() -> tuple:
     """Returns: (list[{date,amount,note}], error_str)."""
     try:
