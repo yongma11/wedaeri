@@ -765,6 +765,24 @@ def run_wedaeri_sim(data, start_dt, init_cap, cash_ratio,
             '총자산':   round(total, 2),
             '수익률':   f"{((total/_basis - 1)*100 if _basis > 0 else 0):.2f}%",
         })
+    # ── 마지막 주봉 이후 ~ 현재 사이의 잔여 조정 (조정일이 최근 금요일보다 미래인 경우) ──
+    #   봇의 동일 처리와 맞춤. 주식 수는 그대로, 예수금·총자산만 갱신.
+    if adj_pending and logs:
+        last_bar = pd.Timestamp(wkly.loc[len(wkly) - 1, 'Date'])
+        now_ts = pd.Timestamp.now().normalize()
+        extra = 0.0
+        for a in adj_pending:
+            if last_bar < a['date'] <= now_ts:
+                extra += a['amount']
+        if extra != 0:
+            cash += extra; net_injected += extra
+            last_p = float(wkly.loc[len(wkly) - 1, 'TQQQ'])
+            total = cash + shares * last_p
+            _basis = init_cap + net_injected
+            logs[-1]['현금']   = round(cash, 2)
+            logs[-1]['노출']   = f"{(shares*last_p/total*100 if total>0 else 0):.1f}%"
+            logs[-1]['총자산'] = round(total, 2)
+            logs[-1]['수익률'] = f"{((total/_basis - 1)*100 if _basis > 0 else 0):.2f}%"
     return pd.DataFrame(logs)
 
 
