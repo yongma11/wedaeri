@@ -52,7 +52,7 @@ CONFIG_FILE = Path(__file__).parent / "wedaeri_h_config.json"
 SHEET_KEY = '1s8XX-8PUAWyWOHOwst2W-b99pQo1_aFtLVg5uTD_HMI'
 DEFAULT_CONFIG = {
     'start_date': '2025-12-26',
-    'cap':        108000,
+    'cap':        80000,
     'cash':       45,
     'bt_cap':     10000,
     'bt_cash':    45,
