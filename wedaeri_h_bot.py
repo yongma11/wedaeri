@@ -20,7 +20,11 @@
 #      검증 결과 위대리-H 위에서는 세후 Calmar를 오히려 낮춤(0.519→0.503).
 #      -H 구조가 이미 과매도를 막고 있어 중복·역효과. 원작자 철학(단순)과도 합치.
 #
-#  [운용] 단독이 아니라 동파공의 헤지 슬리브. 동파공70/위대리-H30 권장(세후 Calmar 1.12).
+
+# [운용] 단독이 아니라 동파공의 헤지 슬리브. 동파공70/위대리-H30 권장(세후 Calmar 1.12).
+#   ※ 외부 유입 현금은 즉시 전량 매수되지 않는다. 매수 예산이 '하락분×비율'이라
+#     유입금은 하락 주간마다 분할로만 시장에 들어간다(목돈 고점 진입 방지).
+
 #  [유지] 실행 타이밍 가드 / reconciliation / 양도세 차감 / 캐시 폴백 구조 동일.
 
 import pandas as pd
@@ -535,7 +539,11 @@ def main():
         for i in range(1, len(sim) - 1):
             p, prev_p, ev = float(sim.loc[i, 'TQQQ']), float(sim.loc[i-1, 'TQQQ']), float(sim.loc[i, 'Eval'])
             bar_date = pd.Timestamp(sim.loc[i, 'Date']); prev_bar_date = pd.Timestamp(sim.loc[i-1, 'Date'])
-            # 현금 조정 반영 (매매 전 예수금에 먼저 — 그 주 매수 실탄으로 쓰이게)
+                    # 현금 조정 반영 (매매 전 예수금에 먼저 편입).
+        #   단, 매수 예산은 min(현금, 하락분×매수비율)이라 하락분이 상한을 정한다.
+        #   → 유입금은 '실탄 후보'일 뿐, 그 주에 전량 매수되지 않고 하락 폭에 좌우된다.
+        #     하락이 크지 않으면 현금으로 남아 이후 하락 주간마다 분할 투입된다.
+
             still_adj = []
             for a in adj_to_apply:
                 if prev_bar_date < pd.Timestamp(a['date']) <= bar_date:
