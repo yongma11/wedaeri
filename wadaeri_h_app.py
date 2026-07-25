@@ -241,7 +241,7 @@ DONGPA_SHEET_NAME = "Dongpa"
 DONGPA_TOTAL_CELL = "B8"
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_dongpa_total() -> tuple:
     """Dongpa 탭 B8 의 총자산(달러)을 읽는다. Returns: (value|None, error_str)."""
     try:
@@ -272,7 +272,7 @@ CASHADJ_SHEET_NAME = "현금조정"
 CASHADJ_HEADER = ['date', 'amount', 'note']
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_cash_adjustments() -> tuple:
     """Returns: (list[{date,amount,note}], error_str)."""
     try:
@@ -525,7 +525,7 @@ SYNTH_FINANCING = 0.03
 SYNTH_EXPENSE   = 0.0086
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def load_wedaeri_data(extended: bool = False):
     try:
         start = DATA_START_EXT if extended else DATA_START
